@@ -6,7 +6,7 @@
 
 # 🛡 Panel Naive + Mieru by RIXXX
 
-**v1.5.7** — Веб-панель управления NaiveProxy + Mieru для Ubuntu/Debian VPS
+**v1.8.8** — Веб-панель управления NaiveProxy + Mieru + Hysteria2 для Ubuntu/Debian VPS
 
 [![Telegram](https://img.shields.io/badge/Telegram-@russian__paradice__vpn-2CA5E0?logo=telegram&logoColor=white)](https://t.me/russian_paradice_vpn)
 [![GitHub](https://img.shields.io/badge/GitHub-cwash797--cmd-181717?logo=github)](https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX)
@@ -30,6 +30,8 @@
 | 5 | Мониторинг: WebSocket метрики в реальном времени, трафик, квоты, история снимков |
 | 6 | `update.sh`: `--dry-run`, `--force`, `--expose`, `--ssh-only`, `--status`, `--repair`, `--help` |
 | 7 | **Каскад / Relay** (v1.2.6): `client → Entry (RU) → Exit (EU) → internet` — Naive `upstream` + Mieru вариант B (mieru-client + redsocks + iptables), управляется из UI |
+| 8 | **Hysteria2 «из коробки»** (v1.8.x): третий протокол общего пула — устанавливается автоматически рядом с Naive + Mieru (`install_hysteria.sh`, `auth: userpass`, systemd, per-user трафик, каскад). Включается чекбоксом в общем пуле пользователя. |
+| 9 | **Одна «умная» Sub-ссылка** (v1.8.7–1.8.8): единая ссылка `/sub/:token` с авто-определением клиента по User-Agent. **Shadowrocket** получает base64-список URI (Naive → нативная HTTPS-схема, Mieru `mierus://`, Hy2 `hysteria2://`), **Karing** — sing-box JSON. Передаёт срок действия и трафик через заголовок `Subscription-Userinfo`. ✅ **Проверено на Karing и Shadowrocket.** |
 
 ---
 
@@ -185,8 +187,33 @@ sudo bash uninstall.sh     # Полное удаление
 | [Sing-box](https://apps.apple.com/app/sing-box/id6451272673) | iOS |
 | [Sing-box](https://github.com/SagerNet/sing-box/releases) | Android / Windows / Linux / macOS |
 
+### Hysteria2
+Устанавливается **из коробки** вместе с Naive + Mieru и работает как третий протокол общего пула. Формат ссылки: `hysteria2://username:password@domain:443?sni=domain&insecure=0#username`.
+
+| Клиент | Платформа |
+|--------|-----------|
+| [ShadowRocket](https://apps.apple.com/app/shadowrocket/id932747118) | iOS |
+| [Karing](https://github.com/KaringX/karing/releases) | iOS / Android / Windows / macOS / Linux |
+| [Hysteria](https://github.com/apernet/hysteria/releases) | CLI |
+
+> ℹ️ Сервер использует `auth: userpass`, поэтому паролем на проводе является связка `username:password`. Для sing-box-клиентов (Karing) панель автоматически подставляет её в поле `password` — отдельного поля username у sing-box нет.
+
+### 🔗 Sub-ссылка (одна «умная» подписка) — v1.8.7–1.8.8
+Нажмите **«Sub-ссылка»** на карточке пользователя, чтобы скопировать единую ссылку вида
+`https://sub.<домен>/sub/<token>`. Она **сама определяет клиент** по User-Agent и отдаёт нужный формат:
+
+| Клиент | Формат | Протоколы |
+|--------|--------|-----------|
+| **Shadowrocket** | base64-список URI | Naive (нативная HTTPS-схема), Mieru (`mierus://`), Hysteria2 (`hysteria2://`) |
+| **Karing** | sing-box JSON | Naive, Mieru, Hysteria2 (как JSON-outbound с `urltest`) |
+
+- Ссылка передаёт клиенту **срок действия и трафик** через заголовок `Subscription-Userinfo`.
+- Ручное переопределение формата: `?client=shadowrocket` / `?client=karing` или `?format=singbox`.
+- Отдельный поддомен `sub.<домен>` настраивается в разделе настроек — Caddy сам выпускает TLS-сертификат.
+- ✅ **Проверено на реальных устройствах в Karing и Shadowrocket** — все три протокола подключаются.
+
 ### Универсальный конфиг (urltest авто-выбор)
-Содержит оба протокола (NaiveProxy + Mieru) с `urltest` — автоматически выбирает более быстрое соединение.
+Содержит все включённые протоколы (NaiveProxy + Mieru + Hysteria2) с `urltest` — автоматически выбирает более быстрое соединение.
 
 ---
 
