@@ -192,6 +192,41 @@ ${basicAuthBlock}    reverse_proxy 127.0.0.1:${panelPort}
 `;
 }
 
+// ── v1.8.7: subscription sub-domain block ────────────────────────────────────
+// When the admin configures a dedicated subscription domain (cfg.subBaseUrl,
+// e.g. https://sub.example.com), Caddy must (a) auto-provision a TLS cert for
+// that host and (b) reverse_proxy the public /sub/* path to the loopback panel.
+// Everything else on the sub domain returns 404 (no admin surface exposed).
+//
+// Returns '' when no sub domain is configured (or it equals the main domain, in
+// which case /sub/ is already served by the panel externally) so the caller
+// appends nothing.
+function subHostFromCfg(cfg) {
+  const raw = String(cfg.subBaseUrl || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+}
+
+function renderSubBlock(cfg) {
+  const host = subHostFromCfg(cfg);
+  if (!host) return '';
+  const email     = String(cfg.adminEmail || '').trim();
+  const panelPort = parseInt(cfg.panelPort, 10) || 3000;
+  return `
+
+# ── v1.8.7: subscription domain (public /sub/* → panel; TLS auto) ─────────────
+${host} {
+  tls ${email}
+  handle /sub/* {
+    reverse_proxy 127.0.0.1:${panelPort}
+  }
+  handle {
+    respond "Not found" 404
+  }
+}
+`;
+}
+
 function render(cfg, naiveUsers) {
   const email      = (cfg.adminEmail  || '').trim();
   const domain     = (cfg.domain      || 'localhost').trim();
@@ -353,7 +388,7 @@ ${authLines}
 
 ${masqueradeBlock}
 }
-${renderPanelBlock(cfg)}`;
+${renderPanelBlock(cfg)}${renderSubBlock(cfg)}`;
 }
 
-module.exports = { render, renderPanelBlock, sanitizeWebBasePath };
+module.exports = { render, renderPanelBlock, renderSubBlock, sanitizeWebBasePath };

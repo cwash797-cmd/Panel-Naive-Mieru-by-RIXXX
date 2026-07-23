@@ -84,6 +84,9 @@ try {
     probeMode:     'bare',   // Bug 81: 'off' | 'bare' | 'secret' (matches known-good ref)
     mitaStateFile: MITA_STATE_FILE,
     trafficPattern: 'NOOP', mtu: 1400, udpEnabled: false,
+    // v1.8.7: optional dedicated subscription domain (e.g.
+    // https://sub.example.com). Empty ⇒ subscription links use the panel domain.
+    subBaseUrl: '',
     // Cascade (relay): Naive uses Caddyfile upstream; Mieru uses Variant B
     // (redsocks+iptables+mieru-client) orchestrated by scripts/cascade_mieru.sh.
     cascadeEnabled: false, cascadeNaiveUpstream: '',
@@ -190,6 +193,24 @@ try {
   // Migrate: add password column if missing (upgrade from v1.0.x)
   try { db.exec(`ALTER TABLE users ADD COLUMN password TEXT NOT NULL DEFAULT ''`); } catch {}
 
+  // v1.8.7: add sub_token column for the per-user subscription link (/sub/:token).
+  // The token is a random, unguessable 128-bit hex string minted at user
+  // creation. It is deliberately SEPARATE from the sequential-ish `id` so the
+  // PUBLIC /sub/:token route can never be enumerated from a leaked id. Existing
+  // users get a token back-filled below (idempotent).
+  try { db.exec(`ALTER TABLE users ADD COLUMN sub_token TEXT`); } catch {}
+  try {
+    const missing = db.prepare(`SELECT id FROM users WHERE sub_token IS NULL OR sub_token = ''`).all();
+    if (missing.length) {
+      const upd = db.prepare(`UPDATE users SET sub_token = ? WHERE id = ?`);
+      const tx  = db.transaction(rows => {
+        for (const r of rows) upd.run(require('crypto').randomBytes(16).toString('hex'), r.id);
+      });
+      tx(missing);
+      console.log(`[DB] back-filled sub_token for ${missing.length} existing user(s)`);
+    }
+  } catch (e) { console.warn('[DB] sub_token back-fill skipped:', e && e.message); }
+
   // Migrate: make `email` nullable so it can be optional (TLS cert is set at
   // install time via Caddy ACME, not per-user). Old schema had `email TEXT
   // NOT NULL UNIQUE`, which rejects empty/absent emails and collides on ''.
@@ -266,6 +287,32 @@ function getUserById(id) {
   if (db) return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   return memUsers.get(id);
 }
+// v1.8.7: resolve the base URL for subscription links. Uses the optional
+// `subBaseUrl` setting when the admin has configured a dedicated sub domain
+// (e.g. https://sub.example.com); otherwise falls back to https://<panel domain>.
+// Always returns a value WITHOUT a trailing slash.
+function subBaseUrl() {
+  let base = String(cfg.subBaseUrl || '').trim();
+  if (!base) base = `https://${cfg.domain || 'localhost'}`;
+  // Normalize: ensure a scheme, strip trailing slashes.
+  if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
+  return base.replace(/\/+$/, '');
+}
+
+// Extract the bare host[:port] from subBaseUrl for the Caddy sub-domain block.
+function subDomainHost() {
+  const raw = String(cfg.subBaseUrl || '').trim();
+  if (!raw) return '';
+  const m = raw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+  return m;
+}
+
+// v1.8.7: look up a user by their subscription token (public /sub/:token route).
+function getUserBySubToken(token) {
+  if (!token) return undefined;
+  if (db) return db.prepare('SELECT * FROM users WHERE sub_token = ?').get(token);
+  return [...memUsers.values()].find(u => u.sub_token === token);
+}
 // Bug 149: map a raw better-sqlite3 error to a safe, user-facing message +
 // HTTP status. UNIQUE-constraint violations become friendly 409s; everything
 // else stays a generic 500 with NO internal path/stacktrace leaked to the UI.
@@ -287,16 +334,18 @@ function upsertUser(u) {
     const email = (u.email && String(u.email).trim()) ? String(u.email).trim() : null;
     db.prepare(`
       INSERT INTO users
-        (id,email,username,passHash,password,expiry,protocols,quotaMB,usedMB,createdAt,updatedAt,lastSeen)
+        (id,email,username,passHash,password,expiry,protocols,quotaMB,usedMB,createdAt,updatedAt,lastSeen,sub_token)
       VALUES
-        (@id,@email,@username,@passHash,@password,@expiry,@protocols,@quotaMB,@usedMB,@createdAt,@updatedAt,@lastSeen)
+        (@id,@email,@username,@passHash,@password,@expiry,@protocols,@quotaMB,@usedMB,@createdAt,@updatedAt,@lastSeen,@sub_token)
       ON CONFLICT(id) DO UPDATE SET
         email=excluded.email, username=excluded.username,
         passHash=excluded.passHash, password=excluded.password,
         expiry=excluded.expiry, protocols=excluded.protocols,
         quotaMB=excluded.quotaMB, usedMB=excluded.usedMB,
-        updatedAt=excluded.updatedAt, lastSeen=excluded.lastSeen
-    `).run({ ...u, email, password: u.password || '' });
+        updatedAt=excluded.updatedAt, lastSeen=excluded.lastSeen,
+        sub_token=COALESCE(excluded.sub_token, users.sub_token)
+    `).run({ ...u, email, password: u.password || '',
+             sub_token: u.sub_token || crypto.randomBytes(16).toString('hex') });
   } else {
     memUsers.set(u.id, u);
   }
@@ -323,11 +372,12 @@ function createUserAtomic(u) {
   if (db) {
     const info = db.prepare(`
       INSERT INTO users
-        (id,email,username,passHash,password,expiry,protocols,quotaMB,usedMB,createdAt,updatedAt,lastSeen)
+        (id,email,username,passHash,password,expiry,protocols,quotaMB,usedMB,createdAt,updatedAt,lastSeen,sub_token)
       VALUES
-        (@id,@email,@username,@passHash,@password,@expiry,@protocols,@quotaMB,@usedMB,@createdAt,@updatedAt,@lastSeen)
+        (@id,@email,@username,@passHash,@password,@expiry,@protocols,@quotaMB,@usedMB,@createdAt,@updatedAt,@lastSeen,@sub_token)
       ON CONFLICT(username) DO NOTHING
-    `).run({ ...u, email, password: u.password || '' });
+    `).run({ ...u, email, password: u.password || '',
+             sub_token: u.sub_token || crypto.randomBytes(16).toString('hex') });
 
     if (info.changes === 1)
       return { created: true, user: getUserByUsername(u.username) };
@@ -471,6 +521,8 @@ function buildCaddyfile(config, users) {
       webBasePath:        config.webBasePath        || '',
       panelStubPage:      config.panelStubPage      || '/var/www/panel-stub/index.html',
       panelPort:          config.panelPort          || 3000,
+      // v1.8.7: subscription sub-domain (public /sub/* → panel; TLS auto).
+      subBaseUrl:         config.subBaseUrl          || '',
     }, naiveUsers);
   }
 
@@ -546,6 +598,19 @@ function buildCaddyfile(config, users) {
     }
   }
 
+  // v1.8.7: subscription sub-domain block (inline fallback — mirrors
+  // caddyTemplate.renderSubBlock). Emitted only when subBaseUrl is configured.
+  let subBlock = '';
+  {
+    const subRaw  = String(config.subBaseUrl || '').trim();
+    const subHost = subRaw ? subRaw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim() : '';
+    if (subHost) {
+      const panelPort = parseInt(config.panelPort, 10) || 3000;
+      subBlock =
+`\n\n# ── v1.8.7: subscription domain (public /sub/* → panel; TLS auto) ─────────────\n${subHost} {\n  tls ${config.adminEmail || ''}\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle {\n    respond "Not found" 404\n  }\n}\n`;
+    }
+  }
+
   // Bug 28: no "tls <email>" inside site block
   // Bug 30: order directive in global block
   // Bug 38: roll_keep_for 720h
@@ -590,7 +655,7 @@ ${authLines}
 
 ${masqueradeBlock}
 }
-${panelBlock}`;
+${panelBlock}${subBlock}`;
 }
 
 // ── writeCaddyfileAtomic() ────────────────────────────────────────────────────
@@ -1680,12 +1745,29 @@ app.get('/api/config', requireAuth, (req, res) => {
 });
 
 app.post('/api/config', requireAuth, (req, res) => {
+  const prevSubBase = cfg.subBaseUrl || '';
   ['domain','naivePort','mieruPortStart','mieruPortEnd',
    'trafficPattern','mtu','udpEnabled','adminEmail','language',
-   'probeSecret','fakeSiteUrl'].forEach(k => {
+   'probeSecret','fakeSiteUrl','subBaseUrl'].forEach(k => {
     if (req.body[k] !== undefined) cfg[k] = req.body[k];
   });
+  // v1.8.7: normalize subBaseUrl (trim; strip trailing slash; allow clearing).
+  if (typeof cfg.subBaseUrl === 'string') {
+    cfg.subBaseUrl = cfg.subBaseUrl.trim().replace(/\/+$/, '');
+  }
   saveConfig();
+  // v1.8.7: if the sub domain changed, rebuild the Caddyfile so Caddy serves
+  // (and auto-provisions a TLS cert for) the new sub.<domain> and reverse-
+  // proxies /sub/* to the panel. Best-effort + logged; never blocks the save.
+  if ((cfg.subBaseUrl || '') !== prevSubBase) {
+    try {
+      writeCaddyfileAtomic(buildCaddyfile(cfg, getAllUsers()));
+      reloadCaddy();
+      console.log('[SUB] Caddy reloaded for subBaseUrl change ->', cfg.subBaseUrl || '(cleared)');
+    } catch (e) {
+      console.warn('[SUB] Caddy reload after subBaseUrl change failed:', e && e.message);
+    }
+  }
   const { adminPassHash, ...safe } = cfg;
   res.json({ ok: true, cfg: safe });
 });
@@ -2237,6 +2319,9 @@ app.post('/api/users', requireAuth, async (req, res) => {
       protocols: JSON.stringify(validation.protocols),
       quotaMB:   validation.quotaMB,
       usedMB:    0,
+      // v1.8.7: mint a random subscription token (128-bit hex) up-front so the
+      // /sub/:token link works the instant the user is created.
+      sub_token: crypto.randomBytes(16).toString('hex'),
       createdAt: now, updatedAt: now, lastSeen: null
     };
 
@@ -3135,6 +3220,148 @@ function buildHy2Link({ username, password, domain, port }) {
   return `hysteria2://${userinfo}@${domain}:${port}?${q}#${enc(username)}`;
 }
 
+// ── Naive share-link (naive+https://) ────────────────────────────────────────
+// Extracted so both the single-link route and the subscription builder share
+// ONE canonical form. Matches the caddy-forwardproxy-naive client key.
+function buildNaiveLink({ username, password, domain, port }) {
+  const enc = encodeURIComponent;
+  return `naive+https://${username}:${enc(password)}@${domain}:${port}`;
+}
+
+// ── v1.8.7: shared per-user URI list for the subscription feature ─────────────
+// Returns the list of client URI strings for exactly the protocols the user has
+// enabled (respects the shared-pool checkboxes). This is the SINGLE source of
+// truth for both:
+//   • the base64 URI subscription (Shadowrocket / v2ray-style clients)
+//   • the config modal single-link buttons (indirectly, via the same builders)
+//
+// `opts.client` (optional) lets a caller drop protocols a given client can't
+// consume. NOTE (per field test on real devices, v1.8.7): Shadowrocket DOES
+// support Mieru via the `mierus://` URI — so we do NOT filter Mieru for it.
+// Karing consumes Mieru only via sing-box JSON (handled separately), so the
+// Karing path uses buildSingboxConfig(), NOT this URI list.
+function buildUserUris(user, opts = {}) {
+  const protos   = parseUserRow(user).protocols || [];
+  const password = opts.password || user.password || 'YOUR_PASSWORD';
+  const uris = [];
+
+  const _ps = parseInt(cfg.mieruPortStart, 10) || 2000;
+  const _pe = parseInt(cfg.mieruPortEnd,   10) || 2010;
+  const mieruPort = pickMieruPort(opts.port, _ps, _pe);
+
+  if (protos.includes('naive')) {
+    uris.push(buildNaiveLink({
+      username: user.username, password,
+      domain: cfg.domain, port: cfg.naivePort
+    }));
+  }
+  if (protos.includes('mieru')) {
+    uris.push(buildMierusLink({
+      username: user.username, password,
+      host: cfg.serverIp || cfg.domain,
+      ports: [mieruPort], transport: 'TCP',
+      multiplexing: 'MULTIPLEXING_HIGH'
+    }));
+  }
+  if (protos.includes('hy2') && cfg.stack && cfg.stack.hy2) {
+    uris.push(buildHy2Link({
+      username: user.username, password,
+      domain: cfg.domain, port: parseInt(cfg.hy2Port, 10) || 443
+    }));
+  }
+  return uris;
+}
+
+// ── v1.8.7: sing-box JSON builder (universal download + Karing subscription) ──
+// Builds a complete sing-box config containing an outbound for EACH protocol
+// the user has enabled (naive / mieru / hy2). The urltest selector is built
+// dynamically from the enabled tags. This is what fixes "Hy2 missing from the
+// universal config" AND powers the Karing subscription (which needs Mieru as a
+// JSON outbound, not a URI).
+function buildSingboxConfig(user, opts = {}) {
+  const protos   = parseUserRow(user).protocols || [];
+  const password = opts.password || user.password || 'YOUR_PASSWORD';
+
+  const _ps = parseInt(cfg.mieruPortStart, 10) || 2000;
+  const _pe = parseInt(cfg.mieruPortEnd,   10) || 2010;
+  const mieruPort = pickMieruPort(opts.port, _ps, _pe);
+
+  const proxyOutbounds = [];
+  const selectTags     = [];
+
+  if (protos.includes('naive')) {
+    selectTags.push('naive-out');
+    proxyOutbounds.push({
+      type: 'naive', tag: 'naive-out',
+      server: cfg.domain, server_port: cfg.naivePort,
+      username: user.username, password,
+      quic: false,
+      tls: { enabled: true, server_name: cfg.domain }
+    });
+  }
+  if (protos.includes('mieru')) {
+    selectTags.push('mieru-out');
+    proxyOutbounds.push({
+      type: 'mieru', tag: 'mieru-out',
+      server: cfg.serverIp || cfg.domain,
+      server_port: mieruPort,
+      transport: 'TCP',
+      username: user.username, password,
+      multiplexing: 'MULTIPLEXING_HIGH'
+    });
+  }
+  if (protos.includes('hy2') && cfg.stack && cfg.stack.hy2) {
+    selectTags.push('hy2-out');
+    proxyOutbounds.push({
+      // sing-box Hysteria2 outbound. Host is the DOMAIN (real TLS SNI + shared
+      // Caddy cert); password is the shared-pool password; server_name pins SNI.
+      type: 'hysteria2', tag: 'hy2-out',
+      server: cfg.domain, server_port: parseInt(cfg.hy2Port, 10) || 443,
+      password,
+      tls: { enabled: true, server_name: cfg.domain, insecure: false }
+    });
+  }
+
+  // Fallback: if the user somehow has no proxy protocols enabled, keep the
+  // config valid (direct only) rather than emitting a broken urltest.
+  const hasProxies = proxyOutbounds.length > 0;
+
+  const outbounds = [];
+  if (hasProxies) {
+    outbounds.push({
+      type: 'urltest', tag: 'select',
+      outbounds: selectTags,
+      url: 'https://www.gstatic.com/generate_204',
+      interval: '3m', tolerance: 50
+    });
+  }
+  outbounds.push(...proxyOutbounds);
+  outbounds.push({ type: 'direct', tag: 'direct' });
+  outbounds.push({ type: 'dns',    tag: 'dns-out' });
+
+  return {
+    log: { level: 'info', timestamp: true },
+    dns: {
+      servers: [
+        { tag: 'remote', address: 'tls://8.8.8.8',              detour: hasProxies ? 'select' : 'direct' },
+        { tag: 'local',  address: 'https://223.5.5.5/dns-query', detour: 'direct' }
+      ],
+      rules:  [{ outbound: 'any', server: 'local' }],
+      final:  'remote'
+    },
+    outbounds,
+    route: {
+      rules: [
+        { protocol: 'dns', outbound: 'dns-out' },
+        { geoip: 'cn',     outbound: 'direct'  },
+        { geosite: 'cn',   outbound: 'direct'  }
+      ],
+      final: hasProxies ? 'select' : 'direct',
+      auto_detect_interface: true
+    }
+  };
+}
+
 app.get('/api/users/:id/config/hy2', requireAuth, (req, res) => {
   const user = getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -3156,71 +3383,15 @@ app.get('/api/users/:id/config/hy2', requireAuth, (req, res) => {
 app.get('/api/users/:id/config/universal', requireAuth, (req, res) => {
   const user = getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  const password = req.query.password || user.password || 'YOUR_PASSWORD';
 
-  // Bug 70: parseInt guard prevents an infinite loop when values are strings/NaN
-  const _portStart70b = parseInt(cfg.mieruPortStart, 10) || 2000;
-  const _portEnd70b   = parseInt(cfg.mieruPortEnd,   10) || 2010;
-  // P3 (selectable port): honour ?port= within the configured range.
-  const mieruPortU = pickMieruPort(req.query.port, _portStart70b, _portEnd70b);
-
-  const universalCfg = {
-    log: { level: 'info', timestamp: true },
-    dns: {
-      servers: [
-        { tag: 'remote', address: 'tls://8.8.8.8',               detour: 'select' },
-        { tag: 'local',  address: 'https://223.5.5.5/dns-query',  detour: 'direct' }
-      ],
-      rules:  [{ outbound: 'any', server: 'local' }],
-      final:  'remote'
-    },
-    outbounds: [
-      {
-        type: 'urltest', tag: 'select',
-        outbounds: ['naive-out', 'mieru-out'],
-        url: 'https://www.gstatic.com/generate_204',
-        interval: '3m', tolerance: 50
-      },
-      {
-        // Bug 87: NaiveProxy outbound MUST be type "naive", NOT "http".
-        // A plain `type:http` is an ordinary HTTP-CONNECT proxy; it completes
-        // TLS + CONNECT but lacks NaiveProxy's Cronet/Chromium traffic shaping
-        // (HTTP/2 framing, padding, header order) that the caddy-forwardproxy
-        // server expects — so the manual `naive+https://…` key worked while the
-        // subscription's http outbound did not. Karing bundles the
-        // with_naive_outbound build (libcronet), so type:naive works there.
-        // `quic:false` matches the server's global `servers { protocols h1 h2 }`
-        // (Bug 80 — HTTP/3 disabled); tls only carries server_name (the only
-        // TLS field the naive outbound honours besides certificate/ech).
-        type: 'naive', tag: 'naive-out',
-        server: cfg.domain, server_port: cfg.naivePort,
-        username: user.username, password,
-        quic: false,
-        tls: { enabled: true, server_name: cfg.domain }
-      },
-      {
-        // Bug 74: working mieru format — string `multiplexing`, single port,
-        // no `server_ports` array, no `multiplex` object.
-        type: 'mieru', tag: 'mieru-out',
-        server: cfg.serverIp || cfg.domain,
-        server_port: mieruPortU,
-        transport: 'TCP',
-        username: user.username, password,
-        multiplexing: 'MULTIPLEXING_HIGH'
-      },
-      { type: 'direct', tag: 'direct' },
-      { type: 'dns',    tag: 'dns-out' }
-    ],
-    route: {
-      rules: [
-        { protocol: 'dns', outbound: 'dns-out' },
-        { geoip: 'cn',     outbound: 'direct'  },
-        { geosite: 'cn',   outbound: 'direct'  }
-      ],
-      final: 'select',
-      auto_detect_interface: true
-    }
-  };
+  // v1.8.7: delegate to the shared sing-box builder. This now adds a Hy2
+  // outbound (was previously MISSING — the universal config only ever had
+  // naive+mieru) AND respects the user's enabled-protocol checkboxes instead of
+  // hard-coding both. The urltest selector is built from the enabled tags.
+  const universalCfg = buildSingboxConfig(user, {
+    password: req.query.password,
+    port: req.query.port
+  });
   const filename = `universal-${user.username}-${cfg.domain}.json`;
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.setHeader('Content-Type', 'application/json');
@@ -3236,6 +3407,97 @@ app.get('/api/users/:id/mieru-config', requireAuth, (req, res) => {
 });
 app.get('/api/users/:id/universal-config', requireAuth, (req, res) => {
   res.redirect(307, `/api/users/${req.params.id}/config/universal${req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v1.8.7: PUBLIC SUBSCRIPTION LINK  —  GET /sub/:token
+// ══════════════════════════════════════════════════════════════════════════════
+// One "smart" URL the admin hands to a client. The client pastes it into their
+// app and it auto-pulls every protocol the user has enabled (2 or 3 configs,
+// per the checkboxes). NO admin login — auth is the unguessable 128-bit token.
+//
+// Client auto-detection (by User-Agent), overridable with ?client=:
+//   • Shadowrocket / v2ray-style / unknown → base64 list of URI strings
+//     (naive+https:// , mierus:// , hysteria2://). Shadowrocket parses ALL of
+//     these, including Mieru (confirmed on a real device).
+//   • Karing / sing-box → full sing-box JSON (Karing needs Mieru as a JSON
+//     outbound, not a URI). ?format=singbox forces this for any client.
+//
+// Response headers (both formats):
+//   • Subscription-Userinfo: upload=…; download=…; total=…; expire=…
+//       → clients show remaining traffic + key expiry. total=0 ⇒ unlimited.
+//   • Profile-Update-Interval: 24  → hint clients to refresh once a day.
+// The body is generated LIVE on every request, so toggling a protocol checkbox
+// or changing the password/ports is reflected the next time the client refreshes
+// — no re-issuing, no manual JSON downloads.
+//
+// Rate-limited independently (public endpoint) to blunt token brute-forcing.
+const subLimiter = rateLimit({ windowMs: 60 * 1000, max: 60,
+  message: 'Rate limit exceeded' });
+
+function detectSubClient(req) {
+  const forced = String(req.query.client || '').trim().toLowerCase();
+  if (forced === 'shadowrocket' || forced === 'sr')      return 'shadowrocket';
+  if (forced === 'karing' || forced === 'singbox' || forced === 'sing-box') return 'karing';
+  if (String(req.query.format || '').toLowerCase() === 'singbox') return 'karing';
+  const ua = String(req.headers['user-agent'] || '').toLowerCase();
+  if (ua.includes('karing') || ua.includes('sing-box') || ua.includes('singbox'))
+    return 'karing';
+  if (ua.includes('shadowrocket')) return 'shadowrocket';
+  // Safe default: base64 URI list — the widest-compatibility format.
+  return 'shadowrocket';
+}
+
+// Build the Subscription-Userinfo header value from the user's quota/usage/expiry.
+function buildSubUserinfo(user) {
+  const MB = 1024 * 1024;
+  const usedBytes  = Math.max(0, Math.round((parseFloat(user.usedMB) || 0) * MB));
+  const totalBytes = Math.max(0, Math.round((parseFloat(user.quotaMB) || 0) * MB)); // 0 ⇒ unlimited
+  // We don't split upload/download here; report all usage as download so the
+  // client's "used" figure is correct. upload=0 keeps the header well-formed.
+  let val = `upload=0; download=${usedBytes}; total=${totalBytes}`;
+  if (user.expiry) {
+    const ts = Date.parse(user.expiry);
+    if (!isNaN(ts)) val += `; expire=${Math.floor(ts / 1000)}`;
+  }
+  return val;
+}
+
+app.get('/sub/:token', subLimiter, (req, res) => {
+  const user = getUserBySubToken(req.params.token);
+  if (!user) return res.status(404).type('text/plain').send('Not found');
+
+  const client = detectSubClient(req);
+  res.setHeader('Profile-Update-Interval', '24');
+  res.setHeader('Subscription-Userinfo', buildSubUserinfo(user));
+  // A friendly profile title shown by most clients.
+  res.setHeader('Content-Disposition',
+    `inline; filename="${encodeURIComponent(user.username)}"`);
+
+  if (client === 'karing') {
+    // sing-box JSON (Mieru works here as a JSON outbound).
+    const singbox = buildSingboxConfig(user, { port: req.query.port });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.send(JSON.stringify(singbox, null, 2));
+  }
+
+  // Default: base64 of the newline-joined URI list (Shadowrocket / v2ray style).
+  const uris = buildUserUris(user, { port: req.query.port });
+  const body = Buffer.from(uris.join('\n'), 'utf8').toString('base64');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  return res.send(body);
+});
+
+// v1.8.7: admin-only helper — returns the ready-to-share sub URL for a user
+// (respecting the optional subBaseUrl setting; falls back to the panel domain).
+app.get('/api/users/:id/sub-link', requireAuth, (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const token = user.sub_token;
+  if (!token) return res.status(409).json({ error: 'User has no subscription token' });
+  const base = subBaseUrl();
+  const link = `${base}/sub/${token}`;
+  res.json({ link, token, base, username: user.username });
 });
 
 // ── Monitoring — /api/status ──────────────────────────────────────────────────

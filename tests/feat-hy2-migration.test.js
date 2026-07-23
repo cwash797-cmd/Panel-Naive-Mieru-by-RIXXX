@@ -453,5 +453,116 @@ console.log('\n[13] Hy2 traffic / enroll / async-apply / logs');
   ok(/grep -qE '\^\\s\*trafficStats\\s\*:' "\$cfg" && return 0/.test(upSrc), 'update: trafficStats migration is idempotent');
 }
 
+// v1.8.7 — Subscription link (/sub/:token) + universal-config Hy2 fix.
+console.log('\n[14] Subscription link: sub_token, /sub route, universal Hy2, subBaseUrl, Caddy');
+{
+  const caddyTplSrc = fs.readFileSync(path.join(ROOT, 'panel', 'server', 'caddyTemplate.js'), 'utf8');
+
+  // ── DB migration: sub_token column + back-fill for existing users ──────────
+  ok(/ALTER TABLE users ADD COLUMN sub_token TEXT/.test(serverSrc),
+     'server: adds sub_token column (migration)');
+  ok(/sub_token IS NULL OR sub_token = ''/.test(serverSrc),
+     'server: back-fills sub_token for existing users');
+  ok(/function getUserBySubToken\(/.test(serverSrc),
+     'server: getUserBySubToken() lookup helper defined');
+  ok(/crypto\.randomBytes\(16\)\.toString\('hex'\)/.test(serverSrc),
+     'server: sub_token is a random 128-bit hex string');
+
+  // ── New user creation mints a token ───────────────────────────────────────
+  ok(/sub_token:\s*crypto\.randomBytes\(16\)/.test(serverSrc),
+     'server: POST /api/users mints a sub_token on create');
+
+  // ── Universal config now includes Hy2 + respects checkboxes ───────────────
+  ok(/function buildSingboxConfig\(/.test(serverSrc),
+     'server: buildSingboxConfig() shared builder defined');
+  ok(/type: 'hysteria2', tag: 'hy2-out'/.test(serverSrc),
+     'server: sing-box builder emits a Hysteria2 outbound (universal Hy2 fix)');
+  ok(/protos\.includes\('naive'\)/.test(serverSrc) &&
+     /protos\.includes\('mieru'\)/.test(serverSrc) &&
+     /protos\.includes\('hy2'\)/.test(serverSrc),
+     'server: sing-box builder respects each protocol checkbox');
+  ok(/buildSingboxConfig\(user, \{\s*\n?\s*password: req\.query\.password/.test(serverSrc) ||
+     /const universalCfg = buildSingboxConfig\(user/.test(serverSrc),
+     'server: universal route delegates to buildSingboxConfig');
+
+  // ── buildUserUris: URI list for the base64 subscription ───────────────────
+  ok(/function buildUserUris\(/.test(serverSrc),
+     'server: buildUserUris() URI-list builder defined');
+  ok(/function buildNaiveLink\(/.test(serverSrc),
+     'server: buildNaiveLink() extracted for reuse');
+
+  // ── Public /sub/:token route ──────────────────────────────────────────────
+  ok(/app\.get\('\/sub\/:token'/.test(serverSrc),
+     'server: public GET /sub/:token route present');
+  ok(!/app\.get\('\/sub\/:token', requireAuth/.test(serverSrc),
+     'server: /sub/:token is PUBLIC (no requireAuth — client is not logged in)');
+  ok(/function detectSubClient\(/.test(serverSrc),
+     'server: detectSubClient() UA detection helper defined');
+  ok(/ua\.includes\('karing'\)/.test(serverSrc) && /ua\.includes\('shadowrocket'\)/.test(serverSrc),
+     'server: detects Karing and Shadowrocket by User-Agent');
+  ok(/if \(client === 'karing'\)/.test(serverSrc),
+     'server: Karing path returns sing-box JSON (Mieru as JSON outbound)');
+  ok(/toString\('base64'\)/.test(serverSrc),
+     'server: Shadowrocket path returns base64 URI list');
+  ok(/Subscription-Userinfo/.test(serverSrc),
+     'server: emits Subscription-Userinfo header (traffic + expiry)');
+  ok(/Profile-Update-Interval/.test(serverSrc),
+     'server: emits Profile-Update-Interval header (refresh hint)');
+  ok(/expire=\$\{Math\.floor\(ts \/ 1000\)\}/.test(serverSrc),
+     'server: expiry passed through to the client as a unix timestamp');
+  ok(/const subLimiter = rateLimit\(/.test(serverSrc),
+     'server: /sub route is rate-limited (brute-force protection)');
+
+  // ── ?client= / ?format= override ──────────────────────────────────────────
+  ok(/forced === 'shadowrocket'/.test(serverSrc) && /forced === 'karing'/.test(serverSrc),
+     'server: ?client= override supported (shadowrocket / karing)');
+  ok(/format.*===.*'singbox'/.test(serverSrc) || /=== 'singbox'/.test(serverSrc),
+     'server: ?format=singbox forces the JSON format');
+
+  // ── Admin helper: /api/users/:id/sub-link ─────────────────────────────────
+  ok(/app\.get\('\/api\/users\/:id\/sub-link', requireAuth/.test(serverSrc),
+     'server: admin sub-link helper route present (auth-gated)');
+  ok(/function subBaseUrl\(/.test(serverSrc),
+     'server: subBaseUrl() resolves configured domain with fallback');
+  ok(/base = `https:\/\/\$\{cfg\.domain/.test(serverSrc),
+     'server: subBaseUrl falls back to the panel domain when unset');
+
+  // ── subBaseUrl config plumbing ────────────────────────────────────────────
+  ok(/subBaseUrl: ''/.test(serverSrc),
+     'server: subBaseUrl default present in config defaults');
+  ok(/'subBaseUrl'\]\.forEach/.test(serverSrc) || /'fakeSiteUrl','subBaseUrl'/.test(serverSrc),
+     'server: POST /api/config accepts subBaseUrl');
+
+  // ── Caddy sub-domain block ────────────────────────────────────────────────
+  ok(/function renderSubBlock\(/.test(caddyTplSrc),
+     'caddyTemplate: renderSubBlock() defined');
+  ok(/handle \/sub\/\* \{/.test(caddyTplSrc),
+     'caddyTemplate: sub-domain reverse_proxies /sub/* to the panel');
+  ok(/renderSubBlock,/.test(caddyTplSrc) || /renderSubBlock\b/.test(caddyTplSrc),
+     'caddyTemplate: exports/uses renderSubBlock');
+  ok(/subBaseUrl:\s*config\.subBaseUrl/.test(serverSrc),
+     'server: passes subBaseUrl into the Caddy template');
+
+  // ── update.sh migration for subBaseUrl ────────────────────────────────────
+  ok(/\.subBaseUrl = \(\.subBaseUrl \/\/ ""\)/.test(upSrc),
+     'update: migrate_config backfills subBaseUrl (empty default)');
+
+  // ── Frontend wiring ───────────────────────────────────────────────────────
+  const appSrc  = fs.readFileSync(path.join(ROOT, 'panel', 'public', 'app.js'), 'utf8');
+  const htmlSrc = fs.readFileSync(path.join(ROOT, 'panel', 'public', 'index.html'), 'utf8');
+  ok(/function downloadSubLink\(/.test(appSrc), 'app.js: downloadSubLink() defined');
+  ok(/case 'dl-sub-link':/.test(appSrc), 'app.js: dl-sub-link action wired');
+  ok(/function saveSubBaseUrl\(/.test(appSrc), 'app.js: saveSubBaseUrl() defined');
+  ok(/data-action="dl-sub-link"/.test(htmlSrc), 'index.html: Sub-link button present');
+  ok(/id="s-sub-base-url"/.test(htmlSrc), 'index.html: subBaseUrl settings input present');
+
+  // ── i18n keys ─────────────────────────────────────────────────────────────
+  for (const lang of ['ru', 'en']) {
+    const loc = JSON.parse(fs.readFileSync(path.join(ROOT, 'panel', 'public', 'locales', lang + '.json'), 'utf8'));
+    ok(loc.config && loc.config.subLink, `locale ${lang}: config.subLink present`);
+    ok(loc.settings && loc.settings.subDomainTitle, `locale ${lang}: settings.subDomainTitle present`);
+  }
+}
+
 console.log('\nResult: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

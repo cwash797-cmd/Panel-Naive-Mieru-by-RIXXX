@@ -136,7 +136,9 @@
     "qrCode": "QR-код",
     "qrNote": "Отсканируйте QR-код клиентом (iOS: ShadowRocket, Karing)",
     "hy2Link": "Hy2 ссылка",
-    "hy2LinkCopied": "Hy2-ссылка скопирована в буфер"
+    "hy2LinkCopied": "Hy2-ссылка скопирована в буфер",
+    "subLink": "Sub-ссылка",
+    "subLinkCopied": "Sub-ссылка скопирована"
   },
   "settings": {
     "title": "Настройки сервера",
@@ -287,7 +289,14 @@
     "hy2PortConfirm": "Сменить порт Hy2? Сервис будет перезапущен, клиентам нужны новые ссылки.",
     "hy2PortUpdated": "Порт Hy2 обновлён",
     "hy2Port": "Порт",
-    "hy2Users": "польз."
+    "hy2Users": "польз.",
+    "subDomainTitle": "Домен подписки (Sub-ссылка)",
+    "subDomainDesc": "Необязательный отдельный домен для sub-ссылок клиентов (например https://sub.example.com). Оставьте пустым — sub-ссылки будут отдаваться с домена панели. Caddy сам выпустит TLS-сертификат.",
+    "subDomainLabel": "Sub base URL",
+    "subDomainNote": "Сначала укажите A-запись этого хоста на IP сервера, иначе TLS-сертификат не выпустится.",
+    "applySubDomain": "Сохранить Sub-домен",
+    "subDomainSaved": "Sub-домен сохранён",
+    "subDomainInvalid": "Неверный URL/домен"
   },
   "monitoring": {
     "title": "Мониторинг",
