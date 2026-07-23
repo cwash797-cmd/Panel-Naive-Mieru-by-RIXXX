@@ -7,6 +7,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.8.8]
+
+> **FIX — Hy2 now connects in Karing, and Naive now imports into Shadowrocket.**
+> Follow-up to the v1.8.7 subscription link, after real-device testing of both
+> clients against the same `/sub/:token` link.
+
+### Fixed
+- **Karing: Hy2 showed a red warning triangle (never connected).** The
+  Hysteria2 server runs with `auth.type: userpass`, so the real wire password is
+  the pair `<username>:<password>`. The official Hysteria2 client exposes a
+  `userpass` alias, but **sing-box does not** — its `hysteria2` outbound has a
+  single `password` field only. The universal / Karing sing-box config was
+  sending the bare password, so authentication failed. `buildSingboxConfig()`
+  now sets the `hy2-out` password to the combined `username:password`.
+- **Shadowrocket: the Naive server was silently dropped from the
+  subscription** (only Mieru + Hy2 appeared). Shadowrocket does **not** parse
+  `naive+https://` from a subscription. Naive is, on the wire, an HTTP CONNECT
+  proxy over TLS — i.e. Shadowrocket's built-in **HTTPS proxy** type (shown as
+  `HTTPS / AUTO`). The base64 subscription (`buildUserUris()`) now emits
+  Shadowrocket's native HTTPS-proxy URI —
+  `https://<urlSafeBase64(username:password@host:port)>?remarks=<name>` — via the
+  new `buildShadowrocketHttpsLink()` helper.
+
+### Unchanged (still correct)
+- Karing keeps consuming **Naive as a JSON outbound** via `buildSingboxConfig()`
+  (which still uses `buildNaiveLink()`'s server key) — Karing's Naive/Mieru were
+  already working.
+- The standalone `hysteria2://user:pass@host:port` URI (Shadowrocket) was already
+  correct: Shadowrocket/subconverter treat everything before `@` as the password,
+  which yields the same combined `username:password`.
+
+### Compatibility
+- No config-schema or DB changes. Existing installs pick up the fix on the next
+  subscription fetch — nothing to migrate, nothing breaks.
+
+---
+
 ## [v1.8.7]
 
 > **FEATURE — one "smart" subscription link (Sub-ссылка) + fix: Hy2 was missing

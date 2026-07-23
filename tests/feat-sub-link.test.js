@@ -45,6 +45,7 @@ function extractFn(src, name) {
 }
 
 const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
+               'buildShadowrocketHttpsLink',
                'buildUserUris', 'buildSingboxConfig', 'detectSubClient',
                'buildSubUserinfo', 'subBaseUrl'];
 
@@ -93,10 +94,26 @@ const mkUser = (protocols, extra = {}) => ({
 console.log('[sub-link] URI builders');
 {
   const naive = vm.runInContext("buildNaiveLink({username:'ivan',password:'p@ss word',domain:'d.com',port:443})", sandbox);
-  ok(naive === 'naive+https://ivan:p%40ss%20word@d.com:443', 'buildNaiveLink percent-encodes password');
+  ok(naive === 'naive+https://ivan:p%40ss%20word@d.com:443', 'buildNaiveLink percent-encodes password (Karing JSON path)');
 
   const hy2 = vm.runInContext("buildHy2Link({username:'ivan',password:'pw',domain:'d.com',port:443})", sandbox);
   ok(hy2 === 'hysteria2://ivan:pw@d.com:443?sni=d.com&insecure=0#ivan', 'buildHy2Link canonical form');
+
+  // v1.8.8: Shadowrocket-native Naive URI (its HTTPS proxy scheme).
+  const srLink = vm.runInContext(
+    "buildShadowrocketHttpsLink({username:'ivan',password:'siyIjCBwaUr08dxS',domain:'d.com',port:443,name:'ivan'})",
+    sandbox);
+  ok(srLink.startsWith('https://'), 'buildShadowrocketHttpsLink uses the https:// scheme');
+  ok(/\?remarks=ivan$/.test(srLink), 'buildShadowrocketHttpsLink appends ?remarks=<name>');
+  ok(!/naive\+https/.test(srLink),   'buildShadowrocketHttpsLink is NOT naive+https:// (Shadowrocket ignores that)');
+  // Round-trip: strip scheme+query, url-safe-b64-decode → user:pass@host:port.
+  {
+    const body = srLink.slice('https://'.length).split('?')[0]
+      .replace(/-/g, '+').replace(/_/g, '/');
+    const dec = Buffer.from(body, 'base64').toString('utf8');
+    ok(dec === 'ivan:siyIjCBwaUr08dxS@d.com:443',
+       'buildShadowrocketHttpsLink base64 decodes to user:pass@host:port');
+  }
 }
 
 console.log('\n[sub-link] buildUserUris respects the protocol checkboxes');
@@ -104,7 +121,12 @@ console.log('\n[sub-link] buildUserUris respects the protocol checkboxes');
   sandbox.__u3 = mkUser(['naive', 'mieru', 'hy2']);
   const three = vm.runInContext('buildUserUris(__u3, {})', sandbox);
   ok(three.length === 3, '3 checkboxes → 3 URIs');
-  ok(three.some(u => u.startsWith('naive+https://')), 'includes naive URI');
+  // v1.8.8: naive URI is now the Shadowrocket-native HTTPS scheme, NOT
+  // naive+https:// (which Shadowrocket silently drops from a subscription).
+  ok(three.some(u => u.startsWith('https://') && !u.startsWith('https://t.me')),
+     'includes Shadowrocket-native Naive URI (https:// scheme)');
+  ok(!three.some(u => u.startsWith('naive+https://')),
+     'buildUserUris no longer emits naive+https:// (Shadowrocket cannot parse it)');
   ok(three.some(u => u.startsWith('mierus://')),      'includes mieru URI');
   ok(three.some(u => u.startsWith('hysteria2://')),   'includes hy2 URI (was the bug!)');
 
@@ -138,6 +160,12 @@ console.log('\n[sub-link] buildSingboxConfig (Karing) includes a Hysteria2 outbo
   ok(tags.includes('hy2-out'),   'sing-box has hy2-out (universal Hy2 fix)');
   const hy2Ob = cfgOut.outbounds.find(o => o.tag === 'hy2-out');
   ok(hy2Ob && hy2Ob.type === 'hysteria2', 'hy2-out is type hysteria2');
+  // v1.8.8 FIX (Karing red triangle): server auth is userpass, and sing-box has
+  // no userpass alias → the hy2 password MUST be the combined username:password.
+  ok(hy2Ob.password === 'ivan:siyIjCBwaUr08dxS',
+     'hy2-out password is combined username:password (userpass → sing-box fix)');
+  ok(hy2Ob.tls && hy2Ob.tls.enabled === true && hy2Ob.tls.server_name === 'sv.example.com',
+     'hy2-out TLS enabled with SNI pinned to domain');
   const sel = cfgOut.outbounds.find(o => o.type === 'urltest');
   ok(sel && sel.outbounds.length === 3, 'urltest selector lists all 3 enabled tags');
 
