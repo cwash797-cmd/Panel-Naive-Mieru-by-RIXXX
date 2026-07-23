@@ -3223,9 +3223,36 @@ function buildHy2Link({ username, password, domain, port }) {
 // ── Naive share-link (naive+https://) ────────────────────────────────────────
 // Extracted so both the single-link route and the subscription builder share
 // ONE canonical form. Matches the caddy-forwardproxy-naive client key.
+// NOTE: this `naive+https://` form is what Karing/sing-box-family clients want,
+// and it is also what the config-modal single-link button hands to the user.
+// Shadowrocket does NOT parse `naive+https://` from a subscription — see
+// buildShadowrocketHttpsLink() below for the form Shadowrocket actually eats.
 function buildNaiveLink({ username, password, domain, port }) {
   const enc = encodeURIComponent;
   return `naive+https://${username}:${enc(password)}@${domain}:${port}`;
+}
+
+// ── v1.8.8: Shadowrocket-native Naive URI (HTTPS proxy scheme) ────────────────
+// Field test (v1.8.7) proved Shadowrocket silently DROPS `naive+https://` lines
+// from a subscription — so Naive never appeared, while Mieru/Hy2 did.
+//
+// Naive is, on the wire, just an HTTP CONNECT proxy tunnelled over TLS. That is
+// exactly Shadowrocket's built-in "HTTPS" proxy type (shown in the UI as
+// `HTTPS / AUTO`). Shadowrocket's subscription URI for an HTTPS proxy is:
+//
+//     https://<urlSafeBase64( username:password@host:port )>?remarks=<name>
+//
+// (Confirmed against the canonical subconverter `explodeHTTPSub` parser: it
+// strips the scheme, url-safe-base64-decodes the remainder, then regex-matches
+// `user:pass@host:port`; the `https://` scheme flags TLS on.) The `#name`
+// fragment is NOT used by that path — the label comes from `?remarks=`.
+function buildShadowrocketHttpsLink({ username, password, domain, port, name }) {
+  const creds  = `${username}:${password}@${domain}:${port}`;
+  // URL-safe base64, no padding — matches urlSafeBase64Decode() expectations.
+  const b64    = Buffer.from(creds, 'utf8').toString('base64')
+                   .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const remark = encodeURIComponent(name || username);
+  return `https://${b64}?remarks=${remark}`;
 }
 
 // ── v1.8.7: shared per-user URI list for the subscription feature ─────────────
@@ -3250,9 +3277,15 @@ function buildUserUris(user, opts = {}) {
   const mieruPort = pickMieruPort(opts.port, _ps, _pe);
 
   if (protos.includes('naive')) {
-    uris.push(buildNaiveLink({
+    // v1.8.8: this URI list feeds the base64 subscription consumed by
+    // Shadowrocket / v2ray-style clients. Shadowrocket ignores `naive+https://`,
+    // so emit its native HTTPS-proxy scheme instead (Naive == HTTP CONNECT over
+    // TLS). Karing does NOT use this list — it gets Naive as a JSON outbound via
+    // buildSingboxConfig(), which still uses buildNaiveLink()'s server key.
+    uris.push(buildShadowrocketHttpsLink({
       username: user.username, password,
-      domain: cfg.domain, port: cfg.naivePort
+      domain: cfg.domain, port: cfg.naivePort,
+      name: user.username
     }));
   }
   if (protos.includes('mieru')) {
@@ -3314,10 +3347,18 @@ function buildSingboxConfig(user, opts = {}) {
     selectTags.push('hy2-out');
     proxyOutbounds.push({
       // sing-box Hysteria2 outbound. Host is the DOMAIN (real TLS SNI + shared
-      // Caddy cert); password is the shared-pool password; server_name pins SNI.
+      // Caddy cert); server_name pins SNI.
+      //
+      // v1.8.8 FIX (Karing red-triangle / Hy2 not connecting): the hysteria2
+      // server runs with `auth.type: userpass` (see install_hysteria.sh), so the
+      // real wire password is the pair `<username>:<password>`. The official
+      // Hysteria2 client accepts a `userpass` alias, but sing-box does NOT — its
+      // hysteria2 outbound has only a single `password` field. Therefore we must
+      // hand sing-box the combined `username:password` string as the password,
+      // otherwise auth fails and Karing shows the red warning triangle.
       type: 'hysteria2', tag: 'hy2-out',
       server: cfg.domain, server_port: parseInt(cfg.hy2Port, 10) || 443,
-      password,
+      password: `${user.username}:${password}`,
       tls: { enabled: true, server_name: cfg.domain, insecure: false }
     });
   }

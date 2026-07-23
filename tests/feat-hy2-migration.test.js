@@ -477,6 +477,17 @@ console.log('\n[14] Subscription link: sub_token, /sub route, universal Hy2, sub
      'server: buildSingboxConfig() shared builder defined');
   ok(/type: 'hysteria2', tag: 'hy2-out'/.test(serverSrc),
      'server: sing-box builder emits a Hysteria2 outbound (universal Hy2 fix)');
+  // v1.8.8: Karing red-triangle fix — hy2 outbound password must be the
+  // combined username:password (server auth.type = userpass; sing-box has no
+  // userpass alias, only a single password field).
+  ok(/password: `\$\{user\.username\}:\$\{password\}`/.test(serverSrc),
+     'server: hy2-out password is combined username:password (userpass fix, v1.8.8)');
+  // v1.8.8: Shadowrocket-native Naive URI (its HTTPS proxy scheme) — Shadowrocket
+  // silently drops naive+https:// from a subscription.
+  ok(/function buildShadowrocketHttpsLink\(/.test(serverSrc),
+     'server: buildShadowrocketHttpsLink() defined (Shadowrocket Naive fix, v1.8.8)');
+  ok(/buildShadowrocketHttpsLink\(\{/.test(serverSrc),
+     'server: buildUserUris emits the Shadowrocket-native Naive URI');
   ok(/protos\.includes\('naive'\)/.test(serverSrc) &&
      /protos\.includes\('mieru'\)/.test(serverSrc) &&
      /protos\.includes\('hy2'\)/.test(serverSrc),
