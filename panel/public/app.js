@@ -273,6 +273,7 @@ function handleDelegatedClick(e) {
     case 'dl-hy2-link':      downloadHy2Link(); break;
     case 'dl-mieru-config':  downloadMieruConfig(); break;
     case 'dl-universal-config': downloadUniversalConfig(); break;
+    case 'dl-sub-link':      downloadSubLink(); break;
 
     // ── Dashboard service buttons
     case 'svc':              svcAction(btn.dataset.svc, btn.dataset.svcAction); break;
@@ -280,6 +281,7 @@ function handleDelegatedClick(e) {
     // ── Settings page
     case 'change-naive-port':    changeNaivePort(); break;
     case 'change-mieru-ports':   changeMieruPorts(); break;
+    case 'save-sub-base-url':    saveSubBaseUrl(); break;
     case 'install-hy2':          installHy2(false); break;
     case 'reinstall-hy2':        installHy2(true); break;
     case 'change-hy2-port':      changeHy2Port(); break;
@@ -1016,6 +1018,24 @@ async function downloadUniversalConfig() {
   } catch (err) { toast(err.message, 'error'); }
 }
 
+// v1.8.7: subscription link. ONE smart URL the client pastes into their app
+// (Shadowrocket / Karing). The server auto-detects the client by User-Agent and
+// returns the right format (base64 URI list vs sing-box JSON), auto-pulling
+// every protocol the user has enabled. We copy it + show a QR, reusing the same
+// link box + QR as the other buttons.
+async function downloadSubLink() {
+  try {
+    const data = await api('GET',
+      `/api/users/${state.selectedUserId}/sub-link`);
+
+    el('naive-link-box').textContent = data.link;
+    el('naive-link-box').classList.remove('hidden');
+    copyToClipboard(data.link);
+    toast(t('config.subLinkCopied') || 'Sub-ссылка скопирована', 'success');
+    generateQR(data.link);
+  } catch (err) { toast(err.message, 'error'); }
+}
+
 // ══════════════════════════════════════════════════════════════
 // SERVER SETTINGS
 // ══════════════════════════════════════════════════════════════
@@ -1028,6 +1048,8 @@ async function loadSettings() {
     el('s-mieru-start').value = cfg.mieruPortStart || 2012;
     el('s-mieru-end').value   = cfg.mieruPortEnd   || 2022;
     el('s-mtu').value         = cfg.mtu || 1400;
+    const subBaseEl = el('s-sub-base-url');
+    if (subBaseEl) subBaseEl.value = cfg.subBaseUrl || '';
     const pattern = cfg.trafficPattern || 'NOOP';
     const radio = document.querySelector(`input[name="traffic-pattern"][value="${pattern}"]`);
     if (radio) radio.checked = true;
@@ -1315,6 +1337,31 @@ async function changeNaivePort() {
     toast(t('toast.naivePortUpdated') || `Порт NaiveProxy → ${port}`, 'info');
   } catch (err) {
     showMsg('naive-port-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// v1.8.7: save the optional subscription base URL. Empty clears it (sub-links
+// then use the panel domain). On change the server rebuilds the Caddyfile so
+// Caddy provisions the sub-domain TLS cert + reverse_proxies /sub/* to the panel.
+async function saveSubBaseUrl() {
+  const raw = (el('s-sub-base-url').value || '').trim();
+  // Light client-side validation: allow empty, else must look like a URL/host.
+  if (raw && !/^([a-z]+:\/\/)?[a-z0-9.-]+(\.[a-z]{2,})(:\d+)?(\/.*)?$/i.test(raw)) {
+    showMsg('sub-base-url-msg', t('settings.subDomainInvalid') || 'Неверный URL/домен', false);
+    return;
+  }
+  const btn = document.querySelector('[data-action="save-sub-base-url"]');
+  setBtnBusy(btn, true);
+  try {
+    const res = await api('POST', '/api/config', { subBaseUrl: raw });
+    state.config = { ...state.config, subBaseUrl: raw };
+    showMsg('sub-base-url-msg', t('settings.subDomainSaved') || 'Sub-домен сохранён', true);
+    toast(t('settings.subDomainSaved') || 'Sub-домен сохранён', 'success');
+    void res;
+  } catch (err) {
+    showMsg('sub-base-url-msg', err.message, false);
   } finally {
     setBtnBusy(btn, false);
   }

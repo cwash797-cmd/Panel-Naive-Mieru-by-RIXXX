@@ -412,9 +412,13 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               <span data-i18n="config.mieruJson">Mieru JSON</span>
             </button>
-            <button class="btn btn-primary"    data-action="dl-universal-config">
+            <button class="btn btn-secondary"  data-action="dl-universal-config">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               <span data-i18n="config.universalConfig">Universal Config</span>
+            </button>
+            <button class="btn btn-primary"    data-action="dl-sub-link">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></svg>
+              <span data-i18n="config.subLink">Sub-ссылка</span>
             </button>
           </div>
         </div>
@@ -518,6 +522,22 @@
             </div>
             <button class="btn btn-primary mt-2" data-action="apply-probe-mode" data-i18n="settings.applyProbeMode">Apply</button>
             <div id="probe-secret-msg" class="msg-inline hidden"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" data-i18n="settings.subDomainTitle">Subscription Domain (Sub-ссылка)</div>
+          <div class="card-body">
+            <p class="card-desc" data-i18n="settings.subDomainDesc">Optional dedicated domain for client subscription links (e.g. https://sub.example.com). Leave empty to serve sub-links from the panel domain. Caddy auto-provisions the TLS certificate.</p>
+            <div class="form-group">
+              <label data-i18n="settings.subDomainLabel">Sub base URL</label>
+              <input type="text" id="s-sub-base-url" placeholder="https://sub.example.com" />
+            </div>
+            <div class="alert alert-warning">
+              <strong>⚠</strong> <span data-i18n="settings.subDomainNote">Point an A-record for this host to this server's IP first, otherwise the TLS certificate cannot be issued.</span>
+            </div>
+            <button class="btn btn-primary mt-2" data-action="save-sub-base-url" data-i18n="settings.applySubDomain">Save Sub Domain</button>
+            <div id="sub-base-url-msg" class="msg-inline hidden"></div>
           </div>
         </div>
 

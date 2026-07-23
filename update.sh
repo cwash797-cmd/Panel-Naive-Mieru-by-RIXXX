@@ -430,6 +430,19 @@ migrate_config() {
     rm -f "$tmp3"
   fi
 
+  # v1.8.7 (subscription link): backfill the optional subBaseUrl field. Default
+  # is "" (empty) — sub-links then use the panel domain, so nothing changes for
+  # existing installs. The admin sets a dedicated sub domain from Settings.
+  local has_sub; has_sub=$(jq -r 'has("subBaseUrl")' "$PANEL_CONFIG" 2>/dev/null)
+  if [[ "$has_sub" != "true" ]]; then
+    local tmp4; tmp4=$(mktemp)
+    if jq '.subBaseUrl = (.subBaseUrl // "")' "$PANEL_CONFIG" > "$tmp4" 2>/dev/null && [[ -s "$tmp4" ]]; then
+      cat "$tmp4" > "$PANEL_CONFIG"
+      log_info "Config migrated: subBaseUrl field added (empty — sub-links use panel domain) ✓"
+    fi
+    rm -f "$tmp4"
+  fi
+
   # BUG-155 (HIGH): self-heal a polluted panelBasicAuthHash. A pre-fix installer
   # could capture `apt-get install apache2-utils` stdout (Selecting previously…,
   # Unpacking…, needrestart banner) into the hash → multi-line value → invalid

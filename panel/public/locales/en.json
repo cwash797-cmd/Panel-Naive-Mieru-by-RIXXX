@@ -136,7 +136,9 @@
     "qrCode": "QR Code",
     "qrNote": "Scan QR code with client app (iOS: ShadowRocket, Karing)",
     "hy2Link": "Hy2 Link",
-    "hy2LinkCopied": "Hy2 link copied to clipboard"
+    "hy2LinkCopied": "Hy2 link copied to clipboard",
+    "subLink": "Sub Link",
+    "subLinkCopied": "Sub link copied"
   },
   "settings": {
     "title": "Server Settings",
@@ -237,7 +239,7 @@
     "cascadeTitle": "Cascade / Relay",
     "cascadeDesc": "Relay setup: traffic goes through this server (entry) to the exit server, then to the internet. Mieru uses Variant B (mieru-client + redsocks + iptables) — the provider only sees this (entry) server.",
     "cascadeEnable": "Enable cascade (relay)",
-    "cascadeHy2Hint": "\u2139 Hysteria2 is cascaded automatically through the same Mieru tunnel (matched by process owner) \u2014 no separate Hy2 exit address is needed. Just fill in the Mieru exit below and tick this box.",
+    "cascadeHy2Hint": "ℹ Hysteria2 is cascaded automatically through the same Mieru tunnel (matched by process owner) — no separate Hy2 exit address is needed. Just fill in the Mieru exit below and tick this box.",
     "hy2Enrolled": "Hy2 enabled on existing keys",
     "cascadeNaiveUpstreamLabel": "Naive upstream URL",
     "cascadeNaiveUpstreamHint": "Format: https://user:pass@host:port (leave blank to skip Naive cascade)",
@@ -287,7 +289,14 @@
     "hy2PortConfirm": "Change Hy2 port? The service will restart, clients need new links.",
     "hy2PortUpdated": "Hy2 port updated",
     "hy2Port": "Port",
-    "hy2Users": "users"
+    "hy2Users": "users",
+    "subDomainTitle": "Subscription Domain (Sub Link)",
+    "subDomainDesc": "Optional dedicated domain for client subscription links (e.g. https://sub.example.com). Leave empty to serve sub-links from the panel domain. Caddy auto-provisions the TLS certificate.",
+    "subDomainLabel": "Sub base URL",
+    "subDomainNote": "Point an A-record for this host to this server's IP first, otherwise the TLS certificate cannot be issued.",
+    "applySubDomain": "Save Sub Domain",
+    "subDomainSaved": "Sub domain saved",
+    "subDomainInvalid": "Invalid URL/domain"
   },
   "monitoring": {
     "title": "Monitoring",

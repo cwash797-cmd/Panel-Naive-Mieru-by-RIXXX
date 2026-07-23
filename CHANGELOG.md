@@ -7,6 +7,44 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.8.7]
+
+> **FEATURE — one "smart" subscription link (Sub-ссылка) + fix: Hy2 was missing
+> from the universal config.**
+
+### Fixed
+- **Hy2 missing from the universal config.** The universal sing-box config only
+  ever emitted `naive-out` + `mieru-out` (hard-coded) and ignored the user's
+  protocol checkboxes. It now builds outbounds from `user.protocols`, adds a
+  proper `hysteria2` outbound, and builds the `urltest` selector dynamically.
+
+### Added
+- **Public subscription endpoint `GET /sub/:token`.** One URL the admin hands a
+  client; pasted into their app it auto-pulls every enabled protocol (2 or 3
+  configs, per the checkboxes). Generated LIVE on every request, so toggling a
+  checkbox / changing a password is reflected on the client's next refresh — no
+  re-issuing, no manual JSON downloads.
+  - **Smart client detection by `User-Agent`:** Shadowrocket → base64 URI list
+    (naive + mieru + hy2); Karing / sing-box → sing-box JSON (Karing consumes
+    Mieru only as a JSON outbound). Overridable with `?client=` / `?format=singbox`.
+  - **`Subscription-Userinfo`** header (used traffic + quota + expiry) and
+    **`Profile-Update-Interval: 24`** so clients show remaining traffic / key
+    expiry and refresh daily.
+  - Per-user random `sub_token` (128-bit hex), separate from the id; back-filled
+    for existing users by an idempotent migration. Route is rate-limited.
+- **Optional `subBaseUrl` setting** (Settings → Subscription Domain). Empty ⇒
+  sub-links use the panel domain; set a dedicated `sub.<domain>` and Caddy
+  auto-provisions its TLS cert and reverse-proxies `/sub/*` to the panel.
+- **"Sub-ссылка" button** in the config modal (copies the URL + shows a QR).
+
+### Compatibility
+- Nothing changes for existing installs: `subBaseUrl` defaults to empty, the
+  Caddy sub-domain block is emitted only when configured, and the `sub_token`
+  column + config field are added by idempotent migrations. Existing Naive /
+  Mieru / Hy2 add/delete and all config downloads are untouched.
+
+---
+
 ## [v1.8.6]
 
 > **FEATURE — Hy2 traffic accounting, auto-enroll, Hy2 logs, and a fix for the
