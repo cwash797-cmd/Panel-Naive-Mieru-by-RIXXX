@@ -4,7 +4,7 @@
 
 <div align="center">
 
-# 🛡 Panel Naive + Mieru by RIXXX
+# 🛡 Panel Naive + Mieru (+Hysteria2) by RIXXX
 
 **v1.8.8** — Веб-панель управления NaiveProxy + Mieru + Hysteria2 для Ubuntu/Debian VPS
 
