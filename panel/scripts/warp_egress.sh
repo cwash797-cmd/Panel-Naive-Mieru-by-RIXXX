@@ -118,6 +118,11 @@ MARK_CONN="0x5152"          # connmark for ANY locally-terminated inbound TCP
 # Management ports to keep on the native route (overridable via env from panel).
 SSH_PORT="${WARP_SSH_PORT:-}"
 PANEL_PORT="${WARP_PANEL_PORT:-3000}"
+# BUG-173 (CRITICAL): the Hysteria2 (QUIC/UDP) service port whose inbound
+#   connections need the native-route return mark. Scoping the UDP return-path
+#   rules to THIS port (instead of ALL udp) is what keeps them from colliding
+#   with WireGuard's own encrypted UDP envelope. Default 443 (the Hy2 default).
+HY2_PORT="${WARP_HY2_PORT:-443}"
 
 log() { echo "[warp] $*"; }
 err() { echo "[warp][ERROR] $*" >&2; }
@@ -422,24 +427,39 @@ route_up() {
       || iptables -t mangle -A OUTPUT -p tcp -j CONNMARK --restore-mark 2>/dev/null || true
 
     # 2a-udp) HY2 (Hysteria2 / QUIC over UDP): identical return-path fix as the
-    #     BUG-171 TCP rule above, but for UDP. Hysteria2 listens on udp/443 (or
-    #     the configured hy2Port); a client's QUIC packets ENTER from a non-WARP
-    #     interface and hit our local UDP socket. Its replies are locally
-    #     generated on OUTPUT — without marking them they fall through the
-    #     `not fwmark → WARP table` rule and get sent into Cloudflare, so the
-    #     handshake never completes for the client. Mark every NEW inbound UDP
-    #     connection arriving from a non-WARP iface, save it on conntrack, and
-    #     restore that mark on all locally-generated UDP so replies carry it and
-    #     the `fwmark MARK_CONN → main` ip rule routes them back natively. Hy2's
-    #     OWN outbound dials (proxy egress) start at OUTPUT with no inbound NEW,
-    #     never get the mark, and still egress via WARP. The PREROUTING
-    #     `-p udp CONNMARK --restore-mark` (set above) already restores on the
-    #     inbound leg; here we add the set-mark + OUTPUT restore to close the loop.
-    #     `! -i <warp>` exempts decrypted traffic returning via the tunnel.
-    iptables -t mangle -C PREROUTING ! -i "$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null \
-      || iptables -t mangle -A PREROUTING ! -i "$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null || true
-    iptables -t mangle -C OUTPUT -p udp -j CONNMARK --restore-mark 2>/dev/null \
-      || iptables -t mangle -A OUTPUT -p udp -j CONNMARK --restore-mark 2>/dev/null || true
+    #     BUG-171 TCP rule above, but for UDP. Hysteria2 listens on udp/${HY2_PORT}
+    #     (default 443); a client's QUIC packets ENTER from a non-WARP interface
+    #     and hit our local UDP socket. Its replies are locally generated on
+    #     OUTPUT — without marking them they fall through the `not fwmark → WARP
+    #     table` rule and get sent into Cloudflare, so the handshake never
+    #     completes for the client.
+    #
+    #   ⚠ BUG-173 (CRITICAL, regression introduced in v1.8.0): the first cut of
+    #     this rule matched ALL udp on OUTPUT — `-p udp CONNMARK --restore-mark`
+    #     with NO port scope. That is fatal here (unlike the TCP twin) because
+    #     WireGuard's OWN encrypted envelope IS udp. WireGuard fwmarks its
+    #     envelope with WG_FWMARK (§0) so the `not fwmark WG_FWMARK → WARP` rule
+    #     keeps it on the native route to reach Cloudflare. But an unscoped
+    #     OUTPUT restore fires on that very envelope: before POSTROUTING has
+    #     saved WG_FWMARK onto the endpoint conntrack (fresh handshake race), the
+    #     restore copies mark 0 onto the envelope, wiping the fwmark WireGuard
+    #     set → the envelope gets mis-routed INTO the WARP table (loop) and the
+    #     return path black-holes (the classic rx≈92B / tx≫0 "handshake OK, no
+    #     return traffic" symptom). It looked provider-blocked and rolled back;
+    #     a second (warm-conntrack) attempt then succeeded — exactly the flaky
+    #     "hangs 3-4 min then works on retry" report.
+    #
+    #     Fix: scope BOTH the inbound set-mark and the OUTPUT restore to the Hy2
+    #     service port only (source port on the reply leg = HY2_PORT). WireGuard's
+    #     envelope (dst 2408/500/1701/4500, src ephemeral) never matches, so its
+    #     fwmark is untouched. `! -i <warp>` still exempts decrypted tunnel
+    #     traffic. Hy2's own outbound proxy dials start at OUTPUT with no inbound
+    #     NEW, never get the mark, and still egress via WARP. This makes WARP
+    #     stable with or without Hy2, and with or without cascade.
+    iptables -t mangle -C PREROUTING ! -i "$dev" -p udp --dport "$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null \
+      || iptables -t mangle -A PREROUTING ! -i "$dev" -p udp --dport "$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null || true
+    iptables -t mangle -C OUTPUT -p udp --sport "$HY2_PORT" -j CONNMARK --restore-mark 2>/dev/null \
+      || iptables -t mangle -A OUTPUT -p udp --sport "$HY2_PORT" -j CONNMARK --restore-mark 2>/dev/null || true
 
     # 2b) BUG-170: TCP MSS clamping for everything egressing via WARP. Without it
     #     clients connect but heavy traffic stalls (segments > MTU-1280 get DF-
@@ -543,6 +563,13 @@ route_down() {
     iptables -t mangle -D PREROUTING ! -i "$dev" -p tcp -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null || true
     iptables -t mangle -D OUTPUT -p tcp -j CONNMARK --restore-mark 2>/dev/null || true
     # HY2/QUIC (UDP) return-path mark — mirror of the TCP rules above (Hysteria2).
+    #   BUG-173: current port-scoped shape (sport/dport = HY2_PORT).
+    iptables -t mangle -D PREROUTING ! -i "$dev" -p udp --dport "$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p udp --sport "$HY2_PORT" -j CONNMARK --restore-mark 2>/dev/null || true
+    # BUG-173: purge the ORIGINAL broad v1.8.0 shape (unscoped `-p udp` on OUTPUT
+    #   collided with WireGuard's own UDP envelope). An in-place upgrade or a
+    #   partial prior run may have left it installed — delete it unconditionally
+    #   so no orphan can keep black-holing the WARP return path.
     iptables -t mangle -D PREROUTING ! -i "$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "$MARK_CONN" 2>/dev/null || true
     iptables -t mangle -D OUTPUT -p udp -j CONNMARK --restore-mark 2>/dev/null || true
     # legacy BUG-171 v1 (broken, ≤ first 1.5.7 build) + ≤v1.5.6 per-port shapes —
@@ -576,7 +603,22 @@ route_down() {
 # Returns 0 (healthy) only if we get an egress IP through the interface.
 warp_healthcheck() {
   local dev="${1:-$WG_IFACE}" ip="" rx=""
-  # Give the handshake a moment to complete and the first reply to arrive.
+  # BUG-173: a freshly-registered WARP account needs a moment before its
+  #   WireGuard endpoint reliably returns traffic. Previously we probed almost
+  #   immediately (only a 1s sleep between curls), so the FIRST — and best —
+  #   endpoint port (2408) frequently "failed" the handshake race, the loop
+  #   cycled to inferior ports (500/1701/4500), and the whole run took 3-4 min
+  #   before a false blocked_return. Wait (up to ~8s) for wg to record a real
+  #   handshake FIRST, so the subsequent egress probe tests a warm tunnel.
+  local h=""
+  local w
+  for w in 1 2 3 4 5 6 7 8; do
+    h="$(wg show "$dev" latest-handshakes 2>/dev/null | awk '{print $2; exit}')"
+    [[ "${h:-0}" =~ ^[0-9]+$ && "${h:-0}" -gt 0 ]] && break
+    sleep 1
+  done
+  # Now probe the public egress IP THROUGH the warp interface (proves the tunnel
+  # is bidirectional, not just handshaked).
   local i
   for i in 1 2 3; do
     ip="$(curl -s --interface "$dev" --max-time "$WARP_HEALTH_TIMEOUT" https://api.ipify.org 2>/dev/null)"

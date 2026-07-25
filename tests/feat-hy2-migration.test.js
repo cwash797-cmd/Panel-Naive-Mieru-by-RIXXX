@@ -266,20 +266,22 @@ console.log('\n[8] Sub-stage D: warp_egress.sh marks the inbound-UDP reply path 
   const routeUp   = fnBody('route_up');
   const routeDown = fnBody('route_down');
   ok(routeUp.length > 0 && routeDown.length > 0, 'route_up()/route_down() located');
-  // set-mark on NEW inbound UDP from a non-WARP iface (mirror of the TCP rule)
-  ok(/-A PREROUTING ! -i "\$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
-     'route_up: marks every NEW inbound UDP conn (! -i warp) — Hy2/QUIC reply path');
-  // unconditional OUTPUT restore for UDP so replies carry the mark
-  ok(/-A OUTPUT -p udp -j CONNMARK --restore-mark/.test(routeUp),
-     'route_up: restores the mark on OUTPUT for UDP (QUIC replies carry it)');
-  // idempotent (-C before -A) for the new UDP rule
-  ok(/-C PREROUTING ! -i "\$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
-     'route_up: -C check before -A for the UDP inbound-mark rule (idempotent)');
-  // teardown removes the UDP rules symmetrically
-  ok(/-D PREROUTING ! -i "\$dev" -p udp -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeDown),
-     'route_down: removes the UDP inbound NEW-connection mark');
-  ok(/-D OUTPUT -p udp -j CONNMARK --restore-mark/.test(routeDown),
-     'route_down: removes the UDP OUTPUT reply-restore');
+  // BUG-173 (v1.8.8): the UDP reply-path rules are now PORT-SCOPED to HY2_PORT so
+  //   they never collide with WireGuard's own UDP envelope (see bug173 test).
+  //   set-mark on NEW inbound UDP to the Hy2 port from a non-WARP iface.
+  ok(/-A PREROUTING ! -i "\$dev" -p udp --dport "\$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
+     'route_up: marks NEW inbound UDP to HY2_PORT (! -i warp) — Hy2/QUIC reply path');
+  // OUTPUT restore scoped to the Hy2 source port so replies carry the mark
+  ok(/-A OUTPUT -p udp --sport "\$HY2_PORT" -j CONNMARK --restore-mark/.test(routeUp),
+     'route_up: restores the mark on OUTPUT for UDP from HY2_PORT (QUIC replies carry it)');
+  // idempotent (-C before -A) for the scoped UDP rule
+  ok(/-C PREROUTING ! -i "\$dev" -p udp --dport "\$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
+     'route_up: -C check before -A for the scoped UDP inbound-mark rule (idempotent)');
+  // teardown removes the scoped UDP rules symmetrically
+  ok(/-D PREROUTING ! -i "\$dev" -p udp --dport "\$HY2_PORT" -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeDown),
+     'route_down: removes the scoped UDP inbound NEW-connection mark');
+  ok(/-D OUTPUT -p udp --sport "\$HY2_PORT" -j CONNMARK --restore-mark/.test(routeDown),
+     'route_down: removes the scoped UDP OUTPUT reply-restore');
   // TCP rules must remain intact (we only ADDED udp, did not remove tcp)
   ok(/-A PREROUTING ! -i "\$dev" -p tcp -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
      'route_up: the original BUG-171 TCP rule is still present (Naive/Mieru unaffected)');

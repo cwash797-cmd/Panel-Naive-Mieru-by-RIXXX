@@ -7,6 +7,45 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.8.9]
+
+> **FIX (CRITICAL) — WARP is stable again: no more "hangs 3-4 min then
+> `blocked_return`" on the first enable.** Regression introduced in v1.8.0.
+
+### Fixed
+- **WARP enable was flaky after updating (BUG-173).** Enabling WARP would hang
+  for 3-4 minutes and then report the hosting-provider-block warning
+  (`blocked_return`, rx≈92 B, tx≫0), yet a **second** attempt minutes later
+  succeeded.
+  - **Root cause:** the v1.8.0 "Hy2 WARP UDP return-path" change added a UDP twin
+    of the BUG-171 TCP rule, but **unscoped** on OUTPUT:
+    `iptables -t mangle -A OUTPUT -p udp -j CONNMARK --restore-mark`. Unlike the
+    TCP twin, this is fatal — **WireGuard's own encrypted envelope is UDP.**
+    WireGuard fwmarks its envelope (`WG_FWMARK`) so the `not fwmark → WARP` rule
+    keeps it on the native route to Cloudflare. During a **fresh** handshake,
+    before POSTROUTING has saved that fwmark onto the endpoint conntrack, the
+    unscoped OUTPUT restore copied mark 0 onto the envelope, **wiping** the
+    fwmark → the envelope got mis-routed into the WARP table (loop) and the
+    return path black-holed. Warm conntrack on a retry was consistent → "worked
+    the second time".
+  - **Fix:** scope **both** UDP return-path rules to the **Hysteria2 service
+    port only** (`--dport`/`--sport HY2_PORT`, injected by the panel via
+    `WARP_HY2_PORT`, default 443). WireGuard's envelope (dst 2408/500/1701/4500,
+    src ephemeral) never matches, so its fwmark is untouched. Result: **WARP is
+    stable with or without Hy2, and with or without cascade.**
+  - **Also:** the healthcheck now waits for a real `wg` handshake **before**
+    probing egress, so the primary endpoint port (2408) is tested on a warm
+    tunnel instead of racing — eliminating the needless "cycle through 4 ports
+    for 3-4 minutes → false failure" path.
+
+### Compatibility
+- Teardown purges **both** the new port-scoped rules **and** the old broad
+  v1.8.0 shape, so an in-place upgrade leaves no orphan mangle rule that could
+  keep black-holing the return path. No config/DB changes. WARP without Hy2,
+  with Hy2, and without cascade were all verified against the rule model.
+
+---
+
 ## [v1.8.8]
 
 > **FIX — Hy2 now connects in Karing, and Naive now imports into Shadowrocket.**
