@@ -1170,6 +1170,10 @@ function runWarpEgress(action, opts = {}) {
     const env = Object.assign({}, process.env, {
       WARP_SSH_PORT:   String(opts.sshPort   || detectSshPort()),
       WARP_PANEL_PORT: String(opts.panelPort || cfg.panelPort || 3000),
+      // BUG-173: the Hysteria2 (QUIC/UDP) service port. The WARP return-path UDP
+      //   rules are scoped to THIS port so they never collide with WireGuard's
+      //   own UDP envelope. Falls back to the Hy2 default (443) when Hy2 is off.
+      WARP_HY2_PORT:   String(opts.hy2Port   || cfg.hy2Port || 443),
       WARP_PERSIST:    opts.persist ? '1' : '0',
     });
     const out = execFileSync('bash', [WARP_SCRIPT, action], { timeout: 180000, env }).toString();
