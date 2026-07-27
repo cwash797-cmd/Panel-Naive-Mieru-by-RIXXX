@@ -275,6 +275,12 @@ function handleDelegatedClick(e) {
     case 'dl-universal-config': downloadUniversalConfig(); break;
     case 'dl-sub-link':      downloadSubLink(); break;
 
+    // ── v1.9.0: personal bonus links
+    case 'add-bonus-link':    addBonusLink(); break;
+    case 'save-bonus-links':  saveBonusLinks(); break;
+    case 'del-bonus-link':    removeBonusLink(parseInt(btn.dataset.idx, 10)); break;
+    case 'toggle-bonus-link': toggleBonusLink(parseInt(btn.dataset.idx, 10)); break;
+
     // ── Dashboard service buttons
     case 'svc':              svcAction(btn.dataset.svc, btn.dataset.svcAction); break;
 
@@ -885,6 +891,82 @@ function openConfigDownload(id) {
   // P3: no password prompt — the server uses the user's stored password.
   // Auto-load the naive link + QR right away.
   loadNaiveLink();
+  // v1.9.0: load THIS user's personal bonus links into the modal block.
+  loadBonusLinks();
+}
+
+// ══════════════════════════════════════════════════════════════
+// v1.9.0: PERSONAL BONUS LINKS (per-user, mixed into their sub)
+// ══════════════════════════════════════════════════════════════
+// In-memory working copy while the modal is open. Saved atomically on
+// "Save bonus links". Shape: [{ url:string, enabled:boolean }].
+let bonusLinksDraft = [];
+
+async function loadBonusLinks() {
+  bonusLinksDraft = [];
+  const input = el('bonus-link-input');
+  if (input) input.value = '';
+  try {
+    const data = await api('GET',
+      `/api/users/${state.selectedUserId}/bonus-links`);
+    bonusLinksDraft = Array.isArray(data.links) ? data.links : [];
+  } catch { /* leave empty; a fresh/mem user simply has none */ }
+  renderBonusLinks();
+}
+
+function renderBonusLinks() {
+  const box = el('bonus-links-list');
+  if (!box) return;
+  if (!bonusLinksDraft.length) {
+    box.innerHTML =
+      `<p style="color:var(--text-secondary);font-size:12px;margin:0">`
+      + `${esc(t('bonus.empty') || 'No bonus links yet.')}</p>`;
+    return;
+  }
+  box.innerHTML = bonusLinksDraft.map((b, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <input type="checkbox" data-action="toggle-bonus-link" data-idx="${i}"
+             ${b.enabled ? 'checked' : ''}
+             title="${esc(t('bonus.toggle') || 'Enabled')}" />
+      <code style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;${b.enabled ? '' : 'opacity:.5;text-decoration:line-through'}"
+            title="${esc(b.url)}">${esc(b.url)}</code>
+      <button class="btn btn-ghost btn-sm" type="button"
+              data-action="del-bonus-link" data-idx="${i}"
+              title="${esc(t('bonus.delete') || 'Delete')}">✕</button>
+    </div>`).join('');
+}
+
+function addBonusLink() {
+  const input = el('bonus-link-input');
+  if (!input) return;
+  const url = input.value.trim();
+  if (!url) return;
+  bonusLinksDraft.push({ url, enabled: true });
+  input.value = '';
+  renderBonusLinks();
+}
+
+function removeBonusLink(idx) {
+  if (!Number.isInteger(idx)) return;
+  bonusLinksDraft.splice(idx, 1);
+  renderBonusLinks();
+}
+
+function toggleBonusLink(idx) {
+  if (!Number.isInteger(idx) || !bonusLinksDraft[idx]) return;
+  bonusLinksDraft[idx].enabled = !bonusLinksDraft[idx].enabled;
+  renderBonusLinks();
+}
+
+async function saveBonusLinks() {
+  try {
+    const data = await api('PUT',
+      `/api/users/${state.selectedUserId}/bonus-links`,
+      { links: bonusLinksDraft });
+    bonusLinksDraft = Array.isArray(data.links) ? data.links : [];
+    renderBonusLinks();
+    toast(t('bonus.saved') || 'Bonus links saved', 'success');
+  } catch (err) { toast(err.message, 'error'); }
 }
 
 // P3: build a `?port=` query string from the modal's port selector, validating

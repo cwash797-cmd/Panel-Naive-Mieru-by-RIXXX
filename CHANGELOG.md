@@ -7,6 +7,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.0]
+
+### Added — Personal "bonus links" in a client's subscription
+
+The admin can now manually attach one or more arbitrary extra links (primarily
+`vless://` exported from 3x-ui, but **any** string format) to a **specific
+client's** subscription. When added, a bonus link appears in that client's
+sub-link right next to the standard Naive/Mieru/Hy2 configs (4+ nodes in one
+subscription); when removed, it disappears. Bonuses are **strictly per-client**
+— they are tied to the user (their `sub_token`), never global, so different
+clients have different sets (or none). There is **no liveness validation, no
+3x-ui sync, no API pulling** — the list is fully manual and the string is stored
+verbatim; the admin owns its correctness.
+
+- **DB:** new nullable `bonus_links TEXT` column on `users` holding a JSON array
+  of `{url, enabled}` objects. Migration is idempotent (`try { ALTER TABLE …
+  ADD COLUMN } catch {}`) so `update.sh` never fails on already-migrated live
+  installs. DB file perms/owner are untouched (stays `600 root:root`).
+- **Subscription assembly (one point of change):** the `/sub/:token` base64 path
+  now appends this user's **enabled** bonus URLs to the URI array — joined with
+  the same `\n` separator — before base64-encoding the whole thing:
+  `lines = [naiveLink, mieruLink, hy2Link, ...bonusLinksOfThisClient]`. Standard
+  Naive/Mieru/Hy2 generation and the base64-list response format are **unchanged**.
+- **Regression guarantee:** a client with no (enabled) bonuses gets a
+  **byte-identical** subscription to before (covered by a dedicated test).
+- **API:** `GET`/`PUT /api/users/:id/bonus-links` (admin-only) to read/replace a
+  user's list; no content validation.
+- **UI:** a "Бонусные ссылки / Bonus links" block in the client's config modal —
+  input + add/delete + per-link enable toggle + save. i18n (ru/en).
+- **Karing (sing-box JSON) path** is intentionally left unchanged: bonus links
+  are raw URI strings and belong to the base64/URI-list clients (Shadowrocket,
+  v2ray-style), as the feature spec's example specifies.
+
+**Tests:** new `feat-bonus-links.test.js` (31 assertions) — the critical
+empty-bonuses-identical regression, append-order, per-client isolation, arbitrary
+format pass-through, `normalizeBonusLinks` edge cases, and source-level wiring
+(idempotent migration, route append, endpoints).
+
+---
+
 ## [v1.8.9]
 
 > **FIX (CRITICAL) — WARP is stable again: no more "hangs 3-4 min then

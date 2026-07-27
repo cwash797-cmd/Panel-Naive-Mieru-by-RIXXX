@@ -370,5 +370,16 @@
   "theme": {
     "dark": "Dark mode",
     "light": "Light mode"
+  },
+  "bonus": {
+    "title": "Bonus links",
+    "hint": "Extra links (e.g. vless://) added only to THIS client's subscription. No validation — paste as-is.",
+    "placeholder": "vless://... or any link",
+    "add": "Add",
+    "save": "Save bonus links",
+    "saved": "Bonus links saved",
+    "empty": "No bonus links yet.",
+    "delete": "Delete",
+    "toggle": "Enabled"
   }
 }
