@@ -100,6 +100,26 @@ console.log('\n[4] BUG-171: proxy egress is still tunneled (only INBOUND replies
      'route_up: default `not fwmark → WARP` rule intact (proxy egress still tunneled)');
 }
 
+console.log('\n[4b] Subscription /sub reply-path is NATIVE under WARP (single-server, no cascade)');
+{
+  // A client fetching https://<sub|panel domain>/sub/:token opens a TCP
+  // connection that TERMINATES LOCALLY at Caddy (:443, from a NON-warp iface) and
+  // is reverse_proxied to the panel over LOOPBACK (127.0.0.1:panelPort). Both legs
+  // are covered by the connection-origin reply-path fix:
+  //   • the inbound leg is a NEW tcp conn from `! -i warp` → gets MARK_CONN;
+  //   • the reply (the base64 subscription body) is restored on OUTPUT and
+  //     routed via `fwmark MARK_CONN → main`, i.e. NATIVELY, never into WARP.
+  // The internal Caddy↔panel hop is loopback and never touches the WARP table.
+  // So enabling WARP on a single server does NOT break serving the sub-link.
+  // This asserts the generic (port-agnostic) shape that guarantees it.
+  ok(/-A PREROUTING ! -i "\$dev" -p tcp -m conntrack --ctstate NEW -j CONNMARK --set-mark "\$MARK_CONN"/.test(routeUp),
+     'inbound HTTPS (Caddy :443) → tagged MARK_CONN regardless of port → /sub connection covered');
+  ok(/-A OUTPUT -p tcp -j CONNMARK --restore-mark/.test(routeUp),
+     'the /sub base64 reply (locally generated TCP) is restored on OUTPUT → routed to main, not WARP');
+  ok(/ip rule add prio "\$p" fwmark "\$MARK_CONN" lookup main/.test(routeUp),
+     'fwmark MARK_CONN → main sends the sub-link reply out the NATIVE NIC (client receives it)');
+}
+
 console.log('\n[5] BUG-171: teardown removes the inbound-mark rules (idempotent)');
 {
   ok(routeDown.length > 0, 'route_down() body located');
