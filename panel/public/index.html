@@ -393,6 +393,31 @@
               <canvas id="qr-canvas"></canvas>
               <div class="qr-note" data-i18n="config.qrNote">Scan QR code with client app (iOS: ShadowRocket, Karing)</div>
             </div>
+
+            <!-- v1.9.0: personal bonus links (per-user, mixed into THIS user's sub). -->
+            <div class="form-group" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+              <label style="display:flex;align-items:center;gap:6px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                <span data-i18n="bonus.title">Bonus links</span>
+              </label>
+              <p style="margin:4px 0 8px;color:var(--text-secondary);font-size:12px" data-i18n="bonus.hint">
+                Extra links (e.g. vless://) added only to THIS user's subscription. No validation — paste as-is.
+              </p>
+              <div id="bonus-links-list"></div>
+              <div style="display:flex;gap:6px;margin-top:8px">
+                <input type="text" id="bonus-link-input" style="flex:1"
+                       data-i18n-ph="bonus.placeholder"
+                       placeholder="vless://... or any link" />
+                <button class="btn btn-secondary" type="button" data-action="add-bonus-link">
+                  <span data-i18n="bonus.add">Add</span>
+                </button>
+              </div>
+              <div style="display:flex;justify-content:flex-end;margin-top:8px">
+                <button class="btn btn-primary btn-sm" type="button" data-action="save-bonus-links">
+                  <span data-i18n="bonus.save">Save bonus links</span>
+                </button>
+              </div>
+            </div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-ghost"      data-action="close-config-modal" data-i18n="config.cancel">Cancel</button>

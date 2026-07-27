@@ -211,6 +211,16 @@ try {
     }
   } catch (e) { console.warn('[DB] sub_token back-fill skipped:', e && e.message); }
 
+  // v1.9.0: personal "bonus links" per user (BONUS-LINKS feature).
+  // A nullable JSON-TEXT column holding an array of {url, enabled} objects that
+  // the admin manually attaches to THIS user's subscription (e.g. a vless://
+  // link exported from 3x-ui). Empty/NULL == no bonuses == byte-identical
+  // subscription output as before (see parseUserRow + /sub/:token). The ALTER is
+  // idempotent: a second run throws "duplicate column" which we swallow, so
+  // update.sh never fails on an already-migrated live install. We deliberately
+  // do NOT touch the DB file perms/owner here (stays 600 root:root).
+  try { db.exec(`ALTER TABLE users ADD COLUMN bonus_links TEXT`); } catch {}
+
   // Migrate: make `email` nullable so it can be optional (TLS cert is set at
   // install time via Caddy ACME, not per-user). Old schema had `email TEXT
   // NOT NULL UNIQUE`, which rejects empty/absent emails and collides on ''.
@@ -2212,7 +2222,33 @@ function parseUserRow(u) {
     protocols: typeof u.protocols === 'string'
       ? (() => { try { return JSON.parse(u.protocols); } catch { return []; } })()
       : (u.protocols || []),
+    // v1.9.0: personal bonus links. Stored as a JSON array of {url, enabled}.
+    // NULL/empty/garbage all normalize to [] so an un-migrated or bonus-less
+    // user behaves EXACTLY as before.
+    bonus_links: normalizeBonusLinks(u.bonus_links),
   };
+}
+
+// v1.9.0: normalize whatever is stored in the bonus_links column into a clean
+// array of {url:string, enabled:boolean}. Accepts a JSON string (from SQLite),
+// an already-parsed array (mem fallback), or NULL/undefined → []. Never throws.
+// Content is stored AS-IS (no url validation) per spec — we only coerce shape.
+function normalizeBonusLinks(raw) {
+  let arr = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try { arr = JSON.parse(s); } catch { return []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map(item => {
+      if (typeof item === 'string') return { url: item, enabled: true };
+      if (item && typeof item === 'object' && typeof item.url === 'string')
+        return { url: item.url, enabled: item.enabled !== false };
+      return null;
+    })
+    .filter(x => x && x.url.trim() !== '');
 }
 
 // ── Password generator (Bug 35) ───────────────────────────────────────────────
@@ -3309,6 +3345,16 @@ function buildUserUris(user, opts = {}) {
   return uris;
 }
 
+// v1.9.0: return the list of ENABLED bonus-link URL strings for a user, in
+// stored order, ready to be pushed onto the subscription URI list. Disabled
+// entries are skipped; a user with no bonuses returns []. Strings are returned
+// AS-IS (no validation / no mutation) — the admin owns their correctness.
+function enabledBonusUrls(user) {
+  return normalizeBonusLinks(user && user.bonus_links)
+    .filter(b => b.enabled)
+    .map(b => b.url);
+}
+
 // ── v1.8.7: sing-box JSON builder (universal download + Karing subscription) ──
 // Builds a complete sing-box config containing an outbound for EACH protocol
 // the user has enabled (naive / mieru / hy2). The urltest selector is built
@@ -3528,6 +3574,14 @@ app.get('/sub/:token', subLimiter, (req, res) => {
 
   // Default: base64 of the newline-joined URI list (Shadowrocket / v2ray style).
   const uris = buildUserUris(user, { port: req.query.port });
+  // v1.9.0: append THIS user's enabled personal bonus links AFTER the standard
+  // Naive/Mieru/Hy2 URIs, joined with the same '\n' separator, then base64 the
+  // whole thing — exactly the one-point change the feature spec calls for:
+  //   lines = [naiveLink, mieruLink, hy2Link, ...bonusLinksOfThisUser]
+  //   return base64(lines.join('\n'))
+  // When the user has no (enabled) bonuses this array is empty, so `uris` is
+  // untouched and the response is byte-for-byte identical to before.
+  for (const url of enabledBonusUrls(user)) uris.push(url);
   const body = Buffer.from(uris.join('\n'), 'utf8').toString('base64');
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   return res.send(body);
@@ -3543,6 +3597,40 @@ app.get('/api/users/:id/sub-link', requireAuth, (req, res) => {
   const base = subBaseUrl();
   const link = `${base}/sub/${token}`;
   res.json({ link, token, base, username: user.username });
+});
+
+// ── v1.9.0: personal bonus links (admin-only, per-user) ─────────────────────
+// GET  → the user's current bonus-link list (normalized [{url, enabled}]).
+// PUT  → replace the whole list. The body is `{ links: [...] }` where each item
+//        may be a raw string or {url, enabled}. NO content/liveness validation —
+//        the string is stored AS-IS. Empty list clears the column back to '[]',
+//        restoring the byte-identical baseline subscription.
+app.get('/api/users/:id/bonus-links', requireAuth, (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ links: normalizeBonusLinks(user.bonus_links) });
+});
+
+app.put('/api/users/:id/bonus-links', requireAuth, (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  // Accept `{ links: [...] }`; normalizeBonusLinks tolerates strings or objects
+  // and drops blank URLs. No url-format validation by design.
+  const links = normalizeBonusLinks((req.body && req.body.links) || []);
+  const json  = JSON.stringify(links);
+  try {
+    if (db) {
+      db.prepare('UPDATE users SET bonus_links = ?, updatedAt = ? WHERE id = ?')
+        .run(json, new Date().toISOString(), user.id);
+    } else {
+      const mem = memUsers.get(user.id);
+      if (mem) { mem.bonus_links = json; mem.updatedAt = new Date().toISOString(); }
+    }
+  } catch (e) {
+    const d = describeDbError(e);
+    return res.status(d.status).json({ error: d.error });
+  }
+  res.json({ links });
 });
 
 // ── Monitoring — /api/status ──────────────────────────────────────────────────
