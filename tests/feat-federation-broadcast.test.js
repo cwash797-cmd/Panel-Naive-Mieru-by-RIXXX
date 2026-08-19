@@ -77,8 +77,12 @@ ok(/app\.post\('\/api\/federation\/provision', fedLimiter,/.test(serverSrc),
      'new user gets a RANDOM local password per node (24-byte hex)');
   ok(/passHash:\s*bcrypt\.hashSync\(password, 12\)/.test(seg),
      'the random password is bcrypt-hashed (never stored plaintext-only)');
+  ok(/let baseName = String\(\(req\.body && req\.body\.username\) \|\| ''\)\.trim\(\);/.test(seg),
+     'the node prefers the SAME username the hub sent (not a random name)');
+  ok(/baseName = email\.split\('@'\)\[0\]/.test(seg),
+     'falls back to the email local-part only when the hub sent no usable username');
   ok(/for \(let i = 2; getUserByUsername\(username\); i\+\+\)/.test(seg),
-     'username is de-collided so a provision never 409s on a username clash');
+     'username is de-collided ONLY on a genuine clash so a provision never 409s');
   ok(/subLink: token \? `\$\{subBaseUrl\(\)\}\/sub\/\$\{token\}`/.test(seg),
      'returns the ready-to-share sub link for this node');
   ok(/catch \(e\) \{[\s\S]*provision failed on node/.test(seg),
@@ -141,6 +145,24 @@ ok(/app\.post\('\/api\/users\/:id\/federation\/deploy', requireAuth,/.test(serve
      'returns a per-node result summary');
 }
 
+// ── [3b] Caddy: /api/federation/* prefix exposed on the sub-domain block ─────
+console.log('\n[3b] Caddy: sub-block exposes the /api/federation/* prefix (fetch + provision)');
+{
+  let caddyTemplate;
+  try { caddyTemplate = require(path.join(ROOT, 'panel', 'server', 'caddyTemplate.js')); } catch (e) {}
+  ok(!!caddyTemplate && typeof caddyTemplate.renderSubBlock === 'function',
+     'caddyTemplate.renderSubBlock is available');
+  if (caddyTemplate && caddyTemplate.renderSubBlock) {
+    const block = caddyTemplate.renderSubBlock({ subBaseUrl: 'https://sub.example.com', adminEmail: 'a@b.c', panelPort: 3000 });
+    ok(/handle \/api\/federation\/\* \{/.test(block),
+       'canonical sub-block proxies the /api/federation/* prefix (so /provision is reachable)');
+    ok(!/handle \/api\/federation\/fetch \{/.test(block),
+       'canonical sub-block no longer pins /fetch alone');
+  }
+  ok(/handle \/api\/federation\/\* \{\\n\s*reverse_proxy 127\.0\.0\.1:\$\{panelPort\}/.test(serverSrc),
+     'index.js inline sub-block also uses the /api/federation/* prefix');
+}
+
 // ── [4] UI + i18n contracts ──────────────────────────────────────────────────
 console.log('\n[4] UI: deploy button + handler + i18n');
 ok(/data-action="deploy-user"/.test(appSrc),
@@ -196,6 +218,9 @@ function makeProvisionNode() {
       // The hub must NEVER send a password.
       const sentPassword = parsed.password !== undefined;
       const action = nodeSeenEmails.has(email) ? 'updated' : 'created';
+      // v1.10.1: echo back the exact username the hub sent (the real node uses
+      // it verbatim unless it clashes), so the hub-side test can assert that the
+      // broadcast carries the SAME username as on the hub.
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ok: true, action, username: parsed.username || email.split('@')[0],
                                subLink: `https://sub.node.example.com/sub/deadbeef`, _sawPassword: sentPassword }));
@@ -249,6 +274,8 @@ function run() {
            'C: new email ⇒ node reports action:created, ok:true');
         ok(typeof r.results[0].subLink === 'string' && /\/sub\//.test(r.results[0].subLink),
            'C: per-node result carries the returned sub link');
+        ok(r.results[0].username === 'newbie',
+           'C: the node used the SAME username the hub sent (not a random one)');
       }
 
       // D: healthy node, KNOWN email ⇒ updated (idempotent re-deploy).

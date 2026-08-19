@@ -407,15 +407,20 @@ function staticChecks() {
       subBaseUrl: 'https://sub.example.com', adminEmail: 'a@b.c', panelPort: 3000 });
     ok(/sub\.example\.com \{/.test(block), 'renders the sub-domain site block');
     ok(/handle \/sub\/\* \{/.test(block), 'still proxies /sub/* (unchanged)');
-    ok(/handle \/api\/federation\/fetch \{[\s\S]*?reverse_proxy 127\.0\.0\.1:3000/.test(block),
-       'ALSO proxies /api/federation/fetch to the loopback panel');
+    // v1.10.1: the sub-block proxies the whole /api/federation/* PREFIX (not just
+    // /fetch) so PR-3b's /provision (broadcast) actually reaches the panel. Each
+    // federation endpoint is individually bearer-gated, so the prefix is safe.
+    ok(/handle \/api\/federation\/\* \{[\s\S]*?reverse_proxy 127\.0\.0\.1:3000/.test(block),
+       'proxies the /api/federation/* prefix to the loopback panel (fetch + provision)');
+    ok(!/handle \/api\/federation\/fetch \{/.test(block),
+       'no longer pins /fetch alone (prefix supersedes it — /provision would 404 otherwise)');
     // no sub domain ⇒ no block (federation stays local-only until a sub-domain exists)
     ok(caddyTemplate.renderSubBlock({ subBaseUrl: '' }) === '',
        'no sub-domain ⇒ no block (federation endpoint not exposed)');
   }
   // (b) inline fallback in index.js must mirror the canonical block
-  ok(/handle \/api\/federation\/fetch \{\\n\s*reverse_proxy 127\.0\.0\.1:\$\{panelPort\}/.test(serverSrc),
-     'index.js inline sub-block also proxies /api/federation/fetch');
+  ok(/handle \/api\/federation\/\* \{\\n\s*reverse_proxy 127\.0\.0\.1:\$\{panelPort\}/.test(serverSrc),
+     'index.js inline sub-block also proxies the /api/federation/* prefix');
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

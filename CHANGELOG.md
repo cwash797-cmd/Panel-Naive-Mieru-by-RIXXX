@@ -7,6 +7,45 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.10.1]
+
+### Fixed (CRITICAL) — "Довыпуск" failed with `fetch failed` / `401 Unauthorized`
+
+PR-3b (v1.10.0) added the `POST /api/federation/provision` node endpoint, but the
+Caddy **sub-domain block only proxied `/api/federation/fetch`** — it never
+forwarded `/provision`. So a broadcast ("довыпуск") request to
+`https://<sub-domain>/api/federation/provision` fell through to the sub-block's
+catch-all and was rejected (**401/404**) — the hardened handler was never reached.
+The hub surfaced this as `Довыпущено на 0/N нод` with `fetch failed` /
+`401 Unauthorized` in the console.
+
+**Fix:** the sub-domain block now proxies the whole **`/api/federation/*`**
+prefix instead of pinning `/fetch` alone (in both the canonical
+`caddyTemplate.renderSubBlock()` and the inline fallback in `index.js`). This
+exposes `/fetch`, `/provision`, and any future federation endpoint uniformly.
+It stays safe because **every** federation endpoint is individually hardened
+(bearer token, constant-time compare, POST-only, 404-on-suspicious, rate-limited).
+
+> After updating, on **each node** reload Caddy so the new sub-block takes
+> effect: `sudo systemctl reload caddy-naive` (the panel does this automatically
+> on the next settings save, but a manual reload applies it immediately). Both
+> the hub **and** every node must be on ≥ v1.10.1.
+
+### Changed — provisioned users keep the SAME username as on the hub
+
+When a node creates a user during a broadcast it now uses the **exact username
+the hub sent** (the email is already identical — it's the match key), instead of
+deriving a name from the email. A numeric suffix is appended **only** if that
+username is already taken on the node by a genuinely different user, so a deploy
+still can never fail on a `UNIQUE(username)` clash. Existing users are updated in
+place and keep their current username, password, and subscription token.
+
+New/updated tests: `feat-federation-broadcast.test.js` (66 assertions — adds the
+`/api/federation/*` Caddy-prefix checks and the same-username-as-hub assertion);
+`feat-federation.test.js` (86 assertions — Caddy exposure now asserts the prefix).
+
+---
+
 ## [v1.10.0]
 
 ### Added — Federation broadcast provision ("довыпуск") — PR-3b
