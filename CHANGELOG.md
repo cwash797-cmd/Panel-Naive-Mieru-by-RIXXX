@@ -7,6 +7,52 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.9]
+
+### Fixed (CRITICAL) — subscription download broke with a TLS handshake error
+
+After a burst of user edits (typically while wiring up federation — adding an
+email to several existing users), clients suddenly **could not download the
+subscription at all**: Shadowrocket/Karing/NekoBox showed a TLS handshake
+failure (`HandshakeException … TLSV1_ALERT_INTERNAL_ERROR`) and **both** the
+main and the federated nodes vanished. A page refresh didn't help because the
+problem was the TLS layer, not the config content.
+
+Root cause: `applyCaddyConfig()` runs after **every** user CRUD, and it did a
+**full `systemctl restart caddy-naive`**. On a server with a dedicated
+subscription sub-domain (`cfg.subBaseUrl`), each restart tears down the
+listeners and makes Caddy re-load / re-provision its TLS certificates. A rapid
+series of edits becomes a restart-storm that can leave the sub-domain **without
+a live certificate mid-flight** — so the `/sub` TLS handshake fails.
+
+Fix: prefer a **graceful reload**. The `caddy-naive.service` unit already ships
+`ExecReload=/bin/kill -USR1 $MAINPID`, and per the official Caddy docs a SIGUSR1
+has "the same effect as `caddy reload` with the currently loaded config" — it
+hot-swaps the just-written Caddyfile **without dropping listeners or certs**, and
+works even with `admin off`. `applyCaddyConfig()` now:
+
+1. validates the Caddyfile first (unchanged);
+2. if the service is active → `systemctl reload` (graceful, **no cert churn, no
+   TLS gap**);
+3. only falls back to a full `restart` if reload isn't possible or fails
+   (still clearing any prior failure storm with `reset-failed`);
+4. re-verifies the service is active afterwards (both paths).
+
+This removes the restart-storm entirely for the common case (content-only
+Caddyfile changes), so subscription downloads stay up during heavy editing.
+Port/domain changes still use an explicit restart where needed. Covered by
+`tests/bug-caddy-reload-cert-churn.test.js` (11 assertions). Full suite: **896
+passed, 0 failed**.
+
+> Note: this bug is **infrastructure/TLS-level**, independent of the v1.9.8
+> federation parsing work — the sing-box aggregation itself is verified healthy
+> (panel boots, `/sub` returns valid base64 + valid sing-box JSON with all
+> outbounds). If a sub-domain cert was already knocked out by the storm, run
+> `sudo systemctl restart caddy-naive` once on the server to let Caddy
+> re-provision it cleanly; from then on reloads keep it stable.
+
+---
+
 ## [v1.9.8]
 
 ### Fixed — federation into sing-box clients (NekoBox+/Karing) only pulled Hy2

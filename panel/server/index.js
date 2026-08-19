@@ -774,19 +774,51 @@ function applyCaddyConfig() {
     lastCaddyError = 'Caddyfile validation failed (not restarting): ' + v.error;
     return { ok: false, error: lastCaddyError };
   }
-  try {
-    // Clear any prior failure storm so the restart isn't blocked by
-    // "Start request repeated too quickly".
-    try { execSync('systemctl reset-failed caddy-naive 2>/dev/null || true', { timeout: 5000 }); } catch {}
-    execSync('systemctl restart caddy-naive', { timeout: 20000 });
-  } catch (e) {
-    lastCaddyError = collectCaddyError(e);
-    return { ok: false, error: lastCaddyError };
+
+  // v1.9.9 (CRITICAL — TLS handshake / cert-churn fix): every user CRUD used to
+  // FULL-RESTART caddy-naive. On a box with a dedicated subscription sub-domain
+  // (cfg.subBaseUrl) that means Caddy tears down and re-provisions its TLS certs
+  // on every single edit. During heavy editing (e.g. adding emails to many users
+  // while wiring up federation) that restart-storm can leave the sub-domain
+  // WITHOUT a live cert mid-flight → clients downloading the /sub link get a TLS
+  // handshake failure (TLSV1_ALERT_INTERNAL_ERROR) and the whole subscription
+  // "disappears". Fix: prefer a GRACEFUL `systemctl reload` — Caddy hot-swaps the
+  // config in place, keeping the already-loaded certs and open listeners, so no
+  // ACME storm and no TLS gap. We only fall back to a full restart if reload
+  // isn't possible (service not running) or actually fails. Port/domain changes
+  // still go through restartCaddy() explicitly elsewhere.
+  const isActive = () => {
+    try { return execSync('systemctl is-active caddy-naive 2>/dev/null', { timeout: 5000 }).toString().trim(); }
+    catch (e) { return (e.stdout ? e.stdout.toString().trim() : '') || 'inactive'; }
+  };
+
+  let reloaded = false;
+  if (isActive() === 'active') {
+    try {
+      // Graceful in-place reload — no listener teardown, no cert re-provision.
+      execSync('systemctl reload caddy-naive', { timeout: 20000 });
+      reloaded = true;
+    } catch (e) {
+      // Reload failed (e.g. unit has no ExecReload, or the reload errored) —
+      // fall through to a full restart below. Not fatal on its own.
+      console.warn('[CADDY] graceful reload failed, falling back to restart:', (e && e.message) || e);
+    }
   }
-  // Verify the service actually came up and stayed up.
-  let active = '';
-  try { active = execSync('systemctl is-active caddy-naive 2>/dev/null', { timeout: 5000 }).toString().trim(); }
-  catch (e) { active = (e.stdout ? e.stdout.toString().trim() : '') || 'inactive'; }
+
+  if (!reloaded) {
+    try {
+      // Clear any prior failure storm so the restart isn't blocked by
+      // "Start request repeated too quickly".
+      try { execSync('systemctl reset-failed caddy-naive 2>/dev/null || true', { timeout: 5000 }); } catch {}
+      execSync('systemctl restart caddy-naive', { timeout: 20000 });
+    } catch (e) {
+      lastCaddyError = collectCaddyError(e);
+      return { ok: false, error: lastCaddyError };
+    }
+  }
+
+  // Verify the service actually came up and stayed up (covers both paths).
+  const active = isActive();
   if (active !== 'active') {
     lastCaddyError = collectCaddyError(null) || `caddy-naive is ${active || 'inactive'}`;
     return { ok: false, error: lastCaddyError };
