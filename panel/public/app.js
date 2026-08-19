@@ -161,6 +161,7 @@ function buildTitles() {
     dashboard:   t('nav.dashboard'),
     users:       t('nav.users'),
     settings:    t('nav.settings'),
+    federation:  t('nav.federation'),
     monitoring:  t('nav.monitoring'),
     logs:        t('nav.logs'),
     diagnostics: t('nav.diagnostics'),
@@ -290,6 +291,15 @@ function handleDelegatedClick(e) {
     case 'save-sub-base-url':    saveSubBaseUrl(); break;
     case 'save-fake-site-url':   saveFakeSiteUrl(); break;
     case 'save-server-flag':     saveServerFlag(); break;
+
+    // ── Federation page
+    case 'gen-federation-token':  genFederationToken(); break;
+    case 'copy-federation-token': copyFederationToken(); break;
+    case 'save-federation-token': saveFederationToken(); break;
+    case 'add-federation-node':   addFederationNode(); break;
+    case 'toggle-federation-node': toggleFederationNode(btn.dataset.nodeId); break;
+    case 'remove-federation-node': removeFederationNode(btn.dataset.nodeId); break;
+
     case 'install-hy2':          installHy2(false); break;
     case 'reinstall-hy2':        installHy2(true); break;
     case 'change-hy2-port':      changeHy2Port(); break;
@@ -436,6 +446,7 @@ function navigateTo(page) {
     case 'dashboard':   loadDashboard();   break;
     case 'users':       loadUsers();       break;
     case 'settings':    loadSettings();    break;
+    case 'federation':  loadFederation();  break;
     case 'monitoring':  loadMonitoring();  break;
     case 'logs':        loadLogs(currentLogService); break;
     case 'diagnostics': runDiagnostics();  break;
@@ -1504,6 +1515,181 @@ async function saveServerFlag() {
     showMsg('server-flag-msg', err.message, false);
   } finally {
     setBtnBusy(btn, false);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// FEDERATION (v1.9.5) — multi-panel link
+// ══════════════════════════════════════════════════════════════
+
+// Load the federation page: this server's node-token state + the peer node list.
+// GET /api/config never returns raw tokens (only *Set booleans), so the token
+// input starts blank and shows a hint whether a token is already configured.
+async function loadFederation() {
+  try {
+    const cfg = await api('GET', '/api/config');
+    state.config = cfg;
+    const tokenEl = el('s-federation-token');
+    if (tokenEl) {
+      tokenEl.value = '';
+      tokenEl.placeholder = cfg.federationTokenSet
+        ? (t('federation.tokenSetPh') || '•••••••• (token is set — leave blank to keep)')
+        : (t('federation.nodeTokenPlaceholder') || 'not set');
+    }
+    const hint = el('federation-token-hint');
+    if (hint) {
+      hint.textContent = cfg.federationTokenSet
+        ? (t('federation.nodeTokenHintSet') || 'A token is set. Generate + Save to replace it (old peers stop working).')
+        : (t('federation.nodeTokenHintUnset') || 'No token yet. Generate one and give it to your main panel.');
+    }
+    renderFederationNodes(Array.isArray(cfg.federationNodes) ? cfg.federationNodes : []);
+  } catch (err) {
+    showMsg('federation-nodes-msg', err.message, false);
+  }
+}
+
+// Render the peer-node list (each row: name, url, tokenSet badge, enable toggle,
+// remove). Tokens are never shown — GET only reports `tokenSet`.
+function renderFederationNodes(nodes) {
+  const box = el('federation-nodes-list');
+  if (!box) return;
+  if (!nodes.length) {
+    box.innerHTML = `<p class="hint" data-i18n="federation.noNodes">${t('federation.noNodes') || 'No peer servers yet.'}</p>`;
+    return;
+  }
+  box.innerHTML = nodes.map(n => {
+    const enabled = n.enabled !== false;
+    const tokenBadge = n.tokenSet
+      ? `<span class="badge badge-blue">${t('federation.tokenOk') || 'token ✓'}</span>`
+      : `<span class="badge badge-red">${t('federation.tokenMissing') || 'no token'}</span>`;
+    const stateBadge = enabled
+      ? `<span class="badge badge-blue">${t('federation.enabled') || 'enabled'}</span>`
+      : `<span class="badge badge-gray">${t('federation.disabled') || 'disabled'}</span>`;
+    const toggleLbl = enabled
+      ? (t('federation.disable') || 'Disable')
+      : (t('federation.enable')  || 'Enable');
+    return `<div class="fed-node-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <div style="flex:1;min-width:160px">
+        <div><strong>${esc(n.name || '—')}</strong> ${stateBadge} ${tokenBadge}</div>
+        <div class="hint" style="word-break:break-all">${esc(n.url || '')}</div>
+      </div>
+      <button class="btn btn-xs btn-secondary" data-action="toggle-federation-node" data-node-id="${esc(n.id)}">${toggleLbl}</button>
+      <button class="btn btn-xs btn-danger" data-action="remove-federation-node" data-node-id="${esc(n.id)}">${t('federation.remove') || 'Remove'}</button>
+    </div>`;
+  }).join('');
+}
+
+// Fill the node-token input with a freshly generated token (not yet persisted).
+async function genFederationToken() {
+  const btn = document.querySelector('[data-action="gen-federation-token"]');
+  setBtnBusy(btn, true);
+  try {
+    const res = await api('GET', '/api/federation/token/generate');
+    const inp = el('s-federation-token');
+    if (inp && res.federationToken) inp.value = res.federationToken;
+    showMsg('federation-token-msg', t('federation.tokenGenerated') || 'Token generated — click Save to apply.', true);
+  } catch (err) {
+    showMsg('federation-token-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// Copy the node-token input to clipboard (whatever is currently shown/typed).
+function copyFederationToken() {
+  const inp = el('s-federation-token');
+  const val = (inp && inp.value || '').trim();
+  if (!val) {
+    showMsg('federation-token-msg', t('federation.nothingToCopy') || 'Nothing to copy — generate a token first.', false);
+    return;
+  }
+  copyToClipboard(val);
+  toast(t('federation.copied') || 'Copied to clipboard', 'success');
+}
+
+// Persist the node token. Empty input = keep the existing token (so re-saving
+// the page never wipes it accidentally — matches the placeholder hint).
+async function saveFederationToken() {
+  const raw = (el('s-federation-token').value || '').trim();
+  const btn = document.querySelector('[data-action="save-federation-token"]');
+  if (!raw) {
+    showMsg('federation-token-msg', t('federation.tokenKept') || 'No change — existing token kept.', true);
+    return;
+  }
+  setBtnBusy(btn, true);
+  try {
+    await api('POST', '/api/config', { federationToken: raw });
+    await loadFederation();
+    showMsg('federation-token-msg', t('federation.tokenSaved') || 'Node token saved.', true);
+    toast(t('federation.tokenSaved') || 'Node token saved.', 'success');
+  } catch (err) {
+    showMsg('federation-token-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// Add a peer node. We re-send the WHOLE list (existing nodes with blank tokens,
+// which the backend preserves by id) plus the new one, then reload.
+async function addFederationNode() {
+  const name  = (el('fed-new-name').value  || '').trim();
+  const url   = (el('fed-new-url').value   || '').trim();
+  const token = (el('fed-new-token').value || '').trim();
+  if (!/^https?:\/\/.+/i.test(url)) {
+    showMsg('federation-nodes-msg', t('federation.badUrl') || 'Enter a valid http(s):// URL.', false);
+    return;
+  }
+  if (!token) {
+    showMsg('federation-nodes-msg', t('federation.needToken') || "Enter that panel's node token.", false);
+    return;
+  }
+  const btn = document.querySelector('[data-action="add-federation-node"]');
+  setBtnBusy(btn, true);
+  try {
+    const existing = (state.config.federationNodes || []).map(n => ({
+      id: n.id, name: n.name, url: n.url, enabled: n.enabled !== false, token: '' // '' = keep
+    }));
+    existing.push({ name, url, token, enabled: true });
+    await api('POST', '/api/config', { federationNodes: existing });
+    el('fed-new-name').value = '';
+    el('fed-new-url').value = '';
+    el('fed-new-token').value = '';
+    await loadFederation();
+    showMsg('federation-nodes-msg', t('federation.nodeAdded') || 'Peer server added.', true);
+    toast(t('federation.nodeAdded') || 'Peer server added.', 'success');
+  } catch (err) {
+    showMsg('federation-nodes-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// Enable/disable a peer node in place (token preserved by id on the backend).
+async function toggleFederationNode(id) {
+  try {
+    const nodes = (state.config.federationNodes || []).map(n => ({
+      id: n.id, name: n.name, url: n.url, token: '',
+      enabled: n.id === id ? !(n.enabled !== false) : (n.enabled !== false)
+    }));
+    await api('POST', '/api/config', { federationNodes: nodes });
+    await loadFederation();
+  } catch (err) {
+    showMsg('federation-nodes-msg', err.message, false);
+  }
+}
+
+// Remove a peer node (with confirmation).
+async function removeFederationNode(id) {
+  if (!confirm(t('federation.confirmRemove') || 'Remove this peer server?')) return;
+  try {
+    const nodes = (state.config.federationNodes || [])
+      .filter(n => n.id !== id)
+      .map(n => ({ id: n.id, name: n.name, url: n.url, token: '', enabled: n.enabled !== false }));
+    await api('POST', '/api/config', { federationNodes: nodes });
+    await loadFederation();
+    toast(t('federation.nodeRemoved') || 'Peer server removed.', 'info');
+  } catch (err) {
+    showMsg('federation-nodes-msg', err.message, false);
   }
 }
 

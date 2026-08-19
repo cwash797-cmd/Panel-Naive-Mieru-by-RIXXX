@@ -130,7 +130,7 @@ console.log('\n[5] bonus links are left untouched (admin flags them manually)');
 // ── [6] config + POST handler + UI + i18n contracts ──────────────────────────
 console.log('\n[6] plumbing: config default, POST accept, UI, i18n');
 ok(/serverFlag: ''/.test(serverSrc), 'serverFlag default present in config defaults');
-ok(/'subBaseUrl','serverFlag'\]\.forEach/.test(serverSrc), 'POST /api/config accepts serverFlag');
+ok(/'subBaseUrl','serverFlag'/.test(serverSrc), 'POST /api/config accepts serverFlag');
 ok(/cfg\.serverFlag = cfg\.serverFlag\.trim\(\)\.slice\(0, 32\)/.test(serverSrc), 'serverFlag trimmed + length-capped');
 ok(/id="s-server-flag"/.test(htmlSrc), 'settings input present');
 ok(/data-action="save-server-flag"/.test(htmlSrc), 'save button wired');

@@ -93,6 +93,21 @@ try {
     // Empty ⇒ names are exactly as before. Bonus links are NOT touched — the
     // admin puts a flag straight into the bonus URI's #fragment if they want one.
     serverFlag: '',
+    // v1.9.5: Federation (multi-panel link). Two independent roles, both optional:
+    //
+    //  • federationToken — THIS server's NODE token. When set, this server will
+    //    answer POST /api/federation/fetch for a caller that presents this exact
+    //    bearer token, returning the base64/URI configs of the user matching the
+    //    requested email. Empty ⇒ the fetch endpoint stays 404 (feature off).
+    //
+    //  • federationNodes — the HUB list: OTHER servers this panel pulls from when
+    //    building a user's /sub. Each entry: { id, name, url, token, enabled }.
+    //    `url` is the other panel's base (e.g. https://panel2.example.com), `token`
+    //    is THAT node's federationToken. Empty list ⇒ /sub behaves exactly as
+    //    before (only local configs). Dead/unreachable nodes are silently skipped
+    //    so a down peer never breaks a subscription.
+    federationToken: '',
+    federationNodes: [],
     // Cascade (relay): Naive uses Caddyfile upstream; Mieru uses Variant B
     // (redsocks+iptables+mieru-client) orchestrated by scripts/cascade_mieru.sh.
     cascadeEnabled: false, cascadeNaiveUpstream: '',
@@ -1772,12 +1787,29 @@ app.get('/api/config', requireAuth, (req, res) => {
       })
     };
   }
+  // v1.9.5: never leak federation secrets to the browser.
+  //  • federationToken (THIS node's bearer) → boolean federationTokenSet.
+  //  • each hub node's `token` → boolean `tokenSet` (the UI edits the list
+  //    without ever seeing the raw peer tokens; POST preserves them by id).
+  {
+    const { federationToken, ...rest } = safe;
+    Object.assign(safe, rest);
+    delete safe.federationToken;
+    safe.federationTokenSet = !!federationToken;
+  }
+  if (Array.isArray(safe.federationNodes)) {
+    safe.federationNodes = safe.federationNodes.map(n => {
+      const { token, ...meta } = n || {};
+      return { ...meta, tokenSet: !!token };
+    });
+  }
   res.json(safe);
 });
 
 app.post('/api/config', requireAuth, (req, res) => {
   const prevSubBase = cfg.subBaseUrl  || '';
   const prevFake    = cfg.fakeSiteUrl || '';   // v1.9.3: watch the masquerade URL too
+  const prevFedNodes = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : []; // v1.9.5
 
   // v1.9.3: validate fakeSiteUrl BEFORE mutating cfg, so a bad value can never
   // be persisted or fed to buildCaddyfile(). Empty string is allowed (= reset
@@ -1789,11 +1821,59 @@ app.post('/api/config', requireAuth, (req, res) => {
     }
   }
 
+  // v1.9.5: validate federationNodes BEFORE mutating cfg. It must be an array of
+  // { name, url, token, enabled } objects with plausible http(s) urls. A bad
+  // payload is rejected with 400 so a malformed list can never reach /sub.
+  if (req.body.federationNodes !== undefined) {
+    const arr = req.body.federationNodes;
+    if (!Array.isArray(arr)) {
+      return res.status(400).json({ error: 'federationNodes must be an array' });
+    }
+    for (const n of arr) {
+      if (!n || typeof n !== 'object') {
+        return res.status(400).json({ error: 'each federation node must be an object' });
+      }
+      const url = String(n.url || '').trim();
+      if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(url)) {
+        return res.status(400).json({ error: 'each federation node needs a valid http(s):// url' });
+      }
+    }
+  }
+
   ['domain','naivePort','mieruPortStart','mieruPortEnd',
    'trafficPattern','mtu','udpEnabled','adminEmail','language',
-   'probeSecret','fakeSiteUrl','subBaseUrl','serverFlag'].forEach(k => {
+   'probeSecret','fakeSiteUrl','subBaseUrl','serverFlag',
+   'federationToken','federationNodes'].forEach(k => {
     if (req.body[k] !== undefined) cfg[k] = req.body[k];
   });
+  // v1.9.5: normalize federationToken (trim; empty allowed = node role off).
+  if (typeof cfg.federationToken === 'string') {
+    cfg.federationToken = cfg.federationToken.trim();
+  }
+  // v1.9.5: normalize federationNodes — assign stable ids, coerce fields, strip
+  // trailing slash on urls, default enabled=true. Never touched by Caddy; used
+  // live by /sub, so edits are instant and cannot break the local server.
+  //
+  // Token preservation: GET /api/config never returns node tokens (only a
+  // `tokenSet` boolean), so the browser sends back an empty/placeholder token
+  // for an existing node it didn't edit. When an incoming node matches a known
+  // id and carries no fresh token, we KEEP the previously stored token instead
+  // of wiping it — so re-saving the list from the UI can never blank a secret.
+  if (Array.isArray(cfg.federationNodes)) {
+    const prevById = new Map((prevFedNodes || []).map(n => [String(n.id), n]));
+    cfg.federationNodes = cfg.federationNodes.map(n => {
+      const id  = String(n.id || crypto.randomBytes(6).toString('hex'));
+      let token = String(n.token || '').trim();
+      if (!token && prevById.has(id)) token = String(prevById.get(id).token || '');
+      return {
+        id,
+        name:    String(n.name || '').trim().slice(0, 64),
+        url:     String(n.url || '').trim().replace(/\/+$/, ''),
+        token,
+        enabled: n.enabled !== false,
+      };
+    });
+  }
   // v1.9.4: normalize serverFlag (trim only; empty allowed = no flag). It's a
   // cosmetic display prefix, applied LIVE by the sub builders — no Caddy
   // rebuild, no service restart, so toggling it is instant and risk-free.
@@ -2007,6 +2087,13 @@ app.post('/api/backup/import', requireAuth, (req, res) => {
 // Generate a random 16-hex webBasePath (does NOT persist — UI persists via save).
 app.get('/api/panel/webbasepath/generate', requireAuth, (req, res) => {
   res.json({ webBasePath: crypto.randomBytes(8).toString('hex') });
+});
+
+// v1.9.5: generate a random 64-hex federation NODE token (does NOT persist —
+// the UI persists it via POST /api/config { federationToken }). This is the
+// bearer secret another panel presents to pull this server's configs.
+app.get('/api/federation/token/generate', requireAuth, (req, res) => {
+  res.json({ federationToken: crypto.randomBytes(32).toString('hex') });
 });
 
 // BUG-155: a valid bcrypt token is exactly  $2[aby]$NN$<53 base64-ish chars>.
@@ -3784,7 +3871,126 @@ function buildSubUserinfo(user) {
   return val;
 }
 
-app.get('/sub/:token', subLimiter, (req, res) => {
+// ── v1.9.5: Federation node endpoint ─────────────────────────────────────────
+// A HUB panel calls this on each of its enabled peer NODES while building a
+// user's /sub, to pull that node's configs for the same person (matched by
+// email). Security model (deliberately paranoid — this is a public POST that
+// hands out working proxy configs):
+//   • POST only. GET/other verbs are handled elsewhere / fall through to 404.
+//   • Bearer token required and must equal THIS server's cfg.federationToken.
+//     If no token is configured the feature is OFF → always 404 (indistinguish-
+//     able from "route doesn't exist", so a probe can't even detect the feature).
+//   • Constant-time token compare (crypto.timingSafeEqual) — no early-exit leak.
+//   • ANY failure (missing/short/mismatched token, feature off) returns the SAME
+//     bare 404 "Not found" — never 401/403, never a hint.
+//   • Unknown email → 200 with an empty list (a valid peer asking about a user
+//     that simply isn't on this node — not an error, just nothing to add).
+//   • Rate-limited by the global apiLimiter (300/min) PLUS its own fedLimiter.
+// Returns JSON { uris: [...] } — the RAW (un-base64'd) URI list for that user on
+// this node, INCLUDING their enabled bonus links, so the hub can splice them
+// straight into the aggregated subscription.
+const fedLimiter = rateLimit({ windowMs: 60 * 1000, max: 120,
+  message: { error: 'Rate limit exceeded' } });
+
+// Constant-time string equality that never throws and never short-circuits on
+// length (compares fixed-size SHA-256 digests so lengths don't leak either).
+function safeTokenEqual(a, b) {
+  try {
+    const ha = crypto.createHash('sha256').update(String(a || ''), 'utf8').digest();
+    const hb = crypto.createHash('sha256').update(String(b || ''), 'utf8').digest();
+    return crypto.timingSafeEqual(ha, hb);
+  } catch { return false; }
+}
+
+app.post('/api/federation/fetch', fedLimiter, (req, res) => {
+  const notFound = () => res.status(404).type('text/plain').send('Not found');
+
+  // Feature off (no node token configured) ⇒ behave as if the route is absent.
+  const nodeToken = String(cfg.federationToken || '').trim();
+  if (!nodeToken) return notFound();
+
+  // Extract bearer token. A missing/malformed header is a 404, not a 401.
+  const auth = String(req.headers['authorization'] || '');
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (!m) return notFound();
+  const presented = m[1].trim();
+  if (!safeTokenEqual(presented, nodeToken)) return notFound();
+
+  // Authenticated peer. Look up the user by email; unknown ⇒ empty list (200).
+  const email = String((req.body && req.body.email) || '').trim();
+  const user = getUserByEmail(email);
+  if (!user) return res.json({ uris: [] });
+
+  // Same URI set the base64 /sub path produces for this user, plus their bonus
+  // links — the hub will merge these into the aggregated subscription. Wrapped
+  // in try/catch so a single bad user row can never 500 a peer's subscription.
+  try {
+    const uris = buildUserUris(user, { port: req.body && req.body.port });
+    for (const url of enabledBonusUrls(user)) uris.push(url);
+    return res.json({ uris });
+  } catch (e) {
+    console.warn('[FED] fetch build failed:', e && e.message);
+    return res.json({ uris: [] });
+  }
+});
+
+// v1.9.5: pull configs for THIS user from every enabled federation peer NODE
+// and return the flat, de-duplicated URI list to splice into the subscription.
+//
+// Design guarantees (so federation can NEVER break a working subscription):
+//   • No email ⇒ return [] immediately (email is the only cross-server key).
+//   • No enabled nodes ⇒ return [] (byte-identical /sub to pre-federation).
+//   • Each peer is fetched in PARALLEL with a hard per-node timeout (Abort
+//     controller). A slow/dead/erroring/HTTP-non-200 node is SILENTLY skipped —
+//     never throws, never delays the whole subscription past the timeout.
+//   • Malformed peer JSON / non-array `uris` ⇒ that node contributes nothing.
+//   • Results are de-duplicated against the local URIs (passed in) so a mesh
+//     of servers sharing a flag/name can't emit the exact same line twice.
+const FED_FETCH_TIMEOUT_MS = 6000;
+async function fetchFederatedUris(user, localUris = [], opts = {}) {
+  const email = String((user && user.email) || '').trim();
+  if (!email) return [];
+  const nodes = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length) return [];
+
+  const results = await Promise.all(active.map(async (n) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FED_FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${String(n.url).replace(/\/+$/, '')}/api/federation/fetch`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': `Bearer ${n.token}` },
+        body:    JSON.stringify({ email, port: opts.port }),
+        signal:  ctrl.signal,
+      });
+      if (!r.ok) return [];
+      const data = await r.json().catch(() => null);
+      if (!data || !Array.isArray(data.uris)) return [];
+      return data.uris.filter(u => typeof u === 'string' && u.trim());
+    } catch (e) {
+      // dead/slow/aborted peer — soft-skip. Log once at debug level only.
+      console.warn(`[FED] node "${n.name || n.url}" skipped:`, e && e.message);
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+
+  const seen = new Set(localUris);
+  const out = [];
+  for (const list of results) {
+    for (const u of list) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      out.push(u);
+    }
+  }
+  return out;
+}
+
+app.get('/sub/:token', subLimiter, async (req, res) => {
   const user = getUserBySubToken(req.params.token);
   if (!user) return res.status(404).type('text/plain').send('Not found');
 
@@ -3798,6 +4004,27 @@ app.get('/sub/:token', subLimiter, (req, res) => {
   if (client === 'karing') {
     // sing-box JSON (Mieru works here as a JSON outbound).
     const singbox = buildSingboxConfig(user, { port: req.query.port });
+    // v1.9.5: fold in configs from federation peer nodes for the SAME user
+    // (matched by email). Peers return raw URI strings; we translate each into
+    // a sing-box outbound (same path as personal bonus links) and register its
+    // tag on the selector/urltest so the JSON stays valid. Unparseable lines
+    // are skipped. A down peer contributes nothing — the JSON is unaffected.
+    try {
+      const fedUris = await fetchFederatedUris(user, [], { port: req.query.port });
+      if (fedUris.length && singbox && Array.isArray(singbox.outbounds)) {
+        // Collect existing tags so we can also extend selector/urltest members.
+        const selectors = singbox.outbounds.filter(o =>
+          o && (o.type === 'selector' || o.type === 'urltest') && Array.isArray(o.outbounds));
+        for (let i = 0; i < fedUris.length; i++) {
+          const ob = bonusUrlToSingboxOutbound(fedUris[i], `fed-${i + 1}`);
+          if (!ob) continue;
+          singbox.outbounds.push(ob);
+          for (const sel of selectors) sel.outbounds.push(ob.tag);
+        }
+      }
+    } catch (e) {
+      console.warn('[FED] sing-box aggregation skipped:', e && e.message);
+    }
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.send(JSON.stringify(singbox, null, 2));
   }
@@ -3812,6 +4039,15 @@ app.get('/sub/:token', subLimiter, (req, res) => {
   // When the user has no (enabled) bonuses this array is empty, so `uris` is
   // untouched and the response is byte-for-byte identical to before.
   for (const url of enabledBonusUrls(user)) uris.push(url);
+  // v1.9.5: append configs pulled from enabled federation peer nodes for the
+  // same user (by email), de-duplicated against the local list. No email / no
+  // enabled peers ⇒ fedUris is empty ⇒ output is identical to pre-federation.
+  try {
+    const fedUris = await fetchFederatedUris(user, uris, { port: req.query.port });
+    for (const url of fedUris) uris.push(url);
+  } catch (e) {
+    console.warn('[FED] base64 aggregation skipped:', e && e.message);
+  }
   const body = Buffer.from(uris.join('\n'), 'utf8').toString('base64');
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   return res.send(body);

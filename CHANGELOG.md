@@ -7,6 +7,59 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.5]
+
+### Added — Federation (multi-panel link, part 1: read + aggregation)
+
+Link several panels so **one subscription link delivers configs from multiple
+servers**. Users are matched across servers by their **email**. Topology is
+**hub → node, one-way pull**: the main panel pulls configs from the peer nodes
+you add, and merges them into each user's `/sub`.
+
+New **Federation** page (dedicated left-menu item) with two roles, both optional
+and independent:
+
+- **This server's node token** — a secret bearer token (generate / copy / save).
+  Give it to your main panel so it can pull this server's configs. Empty ⇒ this
+  server does not answer federation requests at all.
+- **Peer servers** — the list of other panels this one pulls from
+  (`name`, base `url`, that panel's node token, enable toggle). Add / enable /
+  disable / remove from the UI.
+
+Node endpoint `POST /api/federation/fetch` is deliberately paranoid: **POST-only**,
+**bearer token** must equal `federationToken`, **constant-time** compare
+(`timingSafeEqual` over SHA-256 digests), and **any** anomaly (feature off,
+missing/short/wrong token, wrong verb) returns the **same bare 404** — a probe
+can't even tell the feature exists. Unknown email ⇒ `200` with an empty list.
+Rate-limited (per-minute cap) on top of the global API limiter.
+
+Aggregation in `/sub` can **never break a subscription**:
+
+- No email on the user ⇒ no pull (email is the only cross-server key).
+- No enabled peers ⇒ output is **byte-identical** to pre-federation.
+- Each peer is fetched **in parallel** with a hard **timeout**; a slow / dead /
+  erroring / wrong-token / non-200 peer is **silently skipped**.
+- Works for **both** subscription formats: base64 URI list (Shadowrocket / Happ /
+  v2ray) and sing-box JSON (Karing / NekoBox / Exclave / Throne — peer URIs
+  become `fed-N` outbounds, with the selector/urltest members extended so refs
+  resolve). Peer URIs are de-duplicated against the local ones.
+
+Secrets never reach the browser: `GET /api/config` masks `federationToken` →
+boolean `federationTokenSet` and each node's `token` → boolean `tokenSet`;
+`POST /api/config` preserves an unchanged node token by `id`, so re-saving the
+list from the UI can't wipe a secret.
+
+Existing installs are unaffected: `federationToken` defaults to `''` and
+`federationNodes` to `[]`, so with no configuration `/sub` behaves exactly as
+before. A small hint on the user form nudges admins to add an email so a user's
+configs are pulled across federated servers.
+
+Backend: `feat-federation.test.js` (63 assertions) — a **live** 2-process test
+(hub `fetchFederatedUris` ↔ a real node endpoint) plus the endpoint / UI / i18n
+contracts. Full suite green.
+
+---
+
 ## [v1.9.4]
 
 ### Added — per-server display flag / label on all issued configs
