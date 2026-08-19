@@ -7,6 +7,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.2]
+
+### Added — subscription support for the sing-box family (NekoBox / Exclave / Throne)
+
+The subscription endpoint previously auto-detected only **Karing** and
+**Shadowrocket**. Based on a user poll we now also serve **NekoBox (android)**,
+**Exclave (android)** and **Throne** — all of which are **sing-box-engine**
+clients and consume the exact same **sing-box JSON** we already emit for
+Karing. There is still exactly **one** JSON code path to maintain; the three
+new clients just route onto it.
+
+- `detectSubClient()` now recognises `nekobox` / `exclave` / `throne` in the
+  User-Agent and maps them to the sing-box JSON format.
+- The manual override is extended too: `?client=nekobox|exclave|throne`
+  (and the existing `?client=karing|singbox`, `?format=singbox`) force the
+  sing-box JSON — handy for support and testing. A force always beats a
+  conflicting User-Agent.
+- **Shadowrocket and every unknown client are unchanged** — they keep getting
+  the base64 URI list (the safe, widest-compatibility default). Byte-for-byte
+  identical output for existing installs.
+
+### Fixed — admin bonus links now reach sing-box clients too
+
+The admin's manually-added personal bonus links (e.g. a `vless://` link) were
+appended to the base64 URI list (Shadowrocket) but were **invisible** to the
+sing-box JSON path — so Karing/NekoBox/Exclave/Throne never saw them. A new
+`bonusUrlToSingboxOutbound()` translates the common bonus schemes
+(`vless` / `vmess` / `trojan` / `ss` / `hysteria2`) into sing-box outbounds and
+adds them to the config's outbound list **and** the urltest selector. Anything
+it can't parse is **silently skipped** — a single malformed bonus link can
+never break the whole JSON.
+
+### Compatibility
+
+- No schema change, no migration. Existing Karing/Shadowrocket behaviour is
+  preserved exactly; the new clients and the bonus-in-JSON delivery are purely
+  additive.
+
+---
+
 ## [v1.9.1]
 
 ### Fixed — Hy2 crashed when a username contained a dot (subscriber report)

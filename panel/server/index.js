@@ -3366,6 +3366,129 @@ function enabledBonusUrls(user) {
     .map(b => b.url);
 }
 
+// ── v1.9.2: bonus URI → sing-box outbound ─────────────────────────────────────
+// The base64 subscription (Shadowrocket / v2ray) already appends the admin's
+// personal bonus links verbatim. But the sing-box-family clients (Karing,
+// NekoBox, Exclave, Throne) consume JSON outbounds, not a URI list, so those
+// bonus links were previously INVISIBLE to them. This parser converts the most
+// common bonus schemes into sing-box outbound objects so they show up for
+// sing-box clients too. Anything it can't parse (unknown scheme, malformed URL)
+// returns null and is SILENTLY SKIPPED — a bad bonus link must never break the
+// whole JSON. `tag` guarantees a unique, JSON-safe outbound name.
+//
+// Supported: vless:// vmess:// trojan:// ss:// (SIP002) hysteria2://|hy2://
+// The admin owns correctness of the link; we only translate structure, we do
+// not validate that the remote actually works.
+function bonusUrlToSingboxOutbound(rawUrl, tag) {
+  const url = String(rawUrl || '').trim();
+  if (!url) return null;
+  const safeTag = String(tag || 'bonus');
+
+  try {
+    // ── VLESS ── vless://<uuid>@host:port?params#name
+    if (url.startsWith('vless://')) {
+      const u = new URL(url);
+      const port = parseInt(u.port, 10);
+      if (!u.username || !u.hostname || !port) return null;
+      const q = u.searchParams;
+      const security = (q.get('security') || 'none').toLowerCase();
+      const out = {
+        type: 'vless', tag: safeTag,
+        server: u.hostname, server_port: port,
+        uuid: decodeURIComponent(u.username),
+        flow: q.get('flow') || undefined
+      };
+      if (security === 'tls' || security === 'reality') {
+        out.tls = { enabled: true, server_name: q.get('sni') || q.get('host') || u.hostname };
+        if (q.get('fp')) out.tls.utls = { enabled: true, fingerprint: q.get('fp') };
+        if (security === 'reality') {
+          out.tls.reality = { enabled: true, public_key: q.get('pbk') || '', short_id: q.get('sid') || '' };
+        }
+      }
+      const type = (q.get('type') || 'tcp').toLowerCase();
+      if (type === 'ws')   out.transport = { type: 'ws',   path: q.get('path') || '/', headers: q.get('host') ? { Host: q.get('host') } : undefined };
+      if (type === 'grpc') out.transport = { type: 'grpc', service_name: q.get('serviceName') || '' };
+      return out;
+    }
+
+    // ── Trojan ── trojan://<password>@host:port?params#name
+    if (url.startsWith('trojan://')) {
+      const u = new URL(url);
+      const port = parseInt(u.port, 10);
+      if (!u.username || !u.hostname || !port) return null;
+      const q = u.searchParams;
+      const out = {
+        type: 'trojan', tag: safeTag,
+        server: u.hostname, server_port: port,
+        password: decodeURIComponent(u.username),
+        tls: { enabled: true, server_name: q.get('sni') || q.get('host') || u.hostname }
+      };
+      const type = (q.get('type') || 'tcp').toLowerCase();
+      if (type === 'ws')   out.transport = { type: 'ws',   path: q.get('path') || '/', headers: q.get('host') ? { Host: q.get('host') } : undefined };
+      if (type === 'grpc') out.transport = { type: 'grpc', service_name: q.get('serviceName') || '' };
+      return out;
+    }
+
+    // ── Hysteria2 ── hysteria2://|hy2://<auth>@host:port?params#name
+    if (url.startsWith('hysteria2://') || url.startsWith('hy2://')) {
+      const u = new URL(url.replace(/^hy2:\/\//, 'hysteria2://'));
+      const port = parseInt(u.port, 10);
+      if (!u.hostname || !port) return null;
+      const q = u.searchParams;
+      return {
+        type: 'hysteria2', tag: safeTag,
+        server: u.hostname, server_port: port,
+        password: decodeURIComponent(u.username || u.password || ''),
+        tls: { enabled: true, server_name: q.get('sni') || u.hostname,
+               insecure: q.get('insecure') === '1' || q.get('insecure') === 'true' }
+      };
+    }
+
+    // ── Shadowsocks ── ss://base64(method:pass)@host:port#name  (SIP002)
+    if (url.startsWith('ss://')) {
+      const u = new URL(url);
+      const port = parseInt(u.port, 10);
+      if (!u.hostname || !port) return null;
+      let method = '', pass = '';
+      if (u.username && !u.password) {
+        // userinfo is base64(method:password)
+        const dec = Buffer.from(decodeURIComponent(u.username), 'base64').toString('utf8');
+        const i = dec.indexOf(':');
+        if (i < 0) return null;
+        method = dec.slice(0, i); pass = dec.slice(i + 1);
+      } else {
+        method = decodeURIComponent(u.username || '');
+        pass   = decodeURIComponent(u.password || '');
+      }
+      if (!method || !pass) return null;
+      return { type: 'shadowsocks', tag: safeTag,
+               server: u.hostname, server_port: port, method, password: pass };
+    }
+
+    // ── VMess ── vmess://base64(json)
+    if (url.startsWith('vmess://')) {
+      const b64 = url.slice('vmess://'.length).trim();
+      const json = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
+      const port = parseInt(json.port, 10);
+      if (!json.add || !json.id || !port) return null;
+      const out = {
+        type: 'vmess', tag: safeTag,
+        server: json.add, server_port: port,
+        uuid: json.id, security: 'auto',
+        alter_id: parseInt(json.aid, 10) || 0
+      };
+      if ((json.tls || '').toLowerCase() === 'tls')
+        out.tls = { enabled: true, server_name: json.sni || json.host || json.add };
+      const net = (json.net || 'tcp').toLowerCase();
+      if (net === 'ws')   out.transport = { type: 'ws',   path: json.path || '/', headers: json.host ? { Host: json.host } : undefined };
+      if (net === 'grpc') out.transport = { type: 'grpc', service_name: json.path || '' };
+      return out;
+    }
+  } catch { /* malformed → skip */ }
+
+  return null; // unknown scheme → silently skipped
+}
+
 // ── v1.8.7: sing-box JSON builder (universal download + Karing subscription) ──
 // Builds a complete sing-box config containing an outbound for EACH protocol
 // the user has enabled (naive / mieru / hy2). The urltest selector is built
@@ -3422,6 +3545,18 @@ function buildSingboxConfig(user, opts = {}) {
       password: `${user.username}:${password}`,
       tls: { enabled: true, server_name: cfg.domain, insecure: false }
     });
+  }
+
+  // v1.9.2: the admin's personal bonus links must reach sing-box-family clients
+  // (Karing / NekoBox / Exclave / Throne) too — not just the base64 URI list.
+  // Convert each ENABLED bonus URI into a sing-box outbound; unparseable ones
+  // are silently skipped so a single bad link can never break the JSON. Tags
+  // are made unique (bonus-1, bonus-2, …) and added to the urltest selector so
+  // the client can actually pick them.
+  const bonusUrls = enabledBonusUrls(user);
+  for (let i = 0; i < bonusUrls.length; i++) {
+    const ob = bonusUrlToSingboxOutbound(bonusUrls[i], `bonus-${i + 1}`);
+    if (ob) { proxyOutbounds.push(ob); selectTags.push(ob.tag); }
   }
 
   // Fallback: if the user somehow has no proxy protocols enabled, keep the
@@ -3537,14 +3672,31 @@ app.get('/api/users/:id/universal-config', requireAuth, (req, res) => {
 const subLimiter = rateLimit({ windowMs: 60 * 1000, max: 60,
   message: 'Rate limit exceeded' });
 
+// v1.9.2: the sing-box FAMILY of clients. Karing, NekoBox (android), Exclave
+// (android) and Throne are all sing-box-engine clients and consume the same
+// sing-box JSON we already build for Karing. We collapse them all onto the
+// 'karing' branch so there is exactly ONE JSON code path to maintain. Notes
+// gathered 19.08.2026:
+//   • NekoBox  — sing-box outbounds (also parses ClashMeta + v2ray base64).
+//   • Exclave  — sing-box/mihomo-compatible: mieru v3, Hysteria2 and VLESS are
+//                native; NaiveProxy needs a standalone plugin. If the plugin is
+//                absent only the naive outbound fails to start — mieru/hy2/vless
+//                still work, so the JSON stays useful (soft degradation).
+//   • Throne   — sing-box outbounds (also base64-subscription).
+// Shadowrocket + anything unknown stay on the base64 URI list (safe default).
+const SINGBOX_FAMILY_UA = ['karing', 'sing-box', 'singbox', 'nekobox', 'exclave', 'throne'];
+
 function detectSubClient(req) {
+  // Manual force via ?client= (handy for support/testing). Every sing-box-family
+  // name maps to the same 'karing' JSON branch. ?format=singbox also forces it.
   const forced = String(req.query.client || '').trim().toLowerCase();
   if (forced === 'shadowrocket' || forced === 'sr')      return 'shadowrocket';
-  if (forced === 'karing' || forced === 'singbox' || forced === 'sing-box') return 'karing';
+  if (forced === 'karing' || forced === 'singbox' || forced === 'sing-box' ||
+      forced === 'nekobox' || forced === 'exclave' || forced === 'throne')
+    return 'karing';
   if (String(req.query.format || '').toLowerCase() === 'singbox') return 'karing';
   const ua = String(req.headers['user-agent'] || '').toLowerCase();
-  if (ua.includes('karing') || ua.includes('sing-box') || ua.includes('singbox'))
-    return 'karing';
+  if (SINGBOX_FAMILY_UA.some(name => ua.includes(name))) return 'karing';
   if (ua.includes('shadowrocket')) return 'shadowrocket';
   // Safe default: base64 URI list — the widest-compatibility format.
   return 'shadowrocket';
