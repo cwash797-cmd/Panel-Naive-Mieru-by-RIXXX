@@ -48,7 +48,7 @@ function mkSandbox(flag) {
   vm.createContext(sb);
   for (const n of ['applyServerFlag','buildMierusLink','buildHy2Link','buildShadowrocketHttpsLink',
                    'normalizeBonusLinks','enabledBonusUrls','bonusUrlToSingboxOutbound',
-                   'buildUserUris','buildSingboxConfig'])
+                   'buildProxyOutbounds','buildUserUris','buildSingboxConfig'])
     vm.runInContext(extractFn(serverSrc, n), sb);
   return sb;
 }

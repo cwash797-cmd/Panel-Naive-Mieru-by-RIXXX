@@ -1,6 +1,6 @@
 {
   "name": "panel-naive-mieru",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "description": "Web management panel for NaiveProxy + Mieru by RIXXX",
   "main": "server/index.js",
   "scripts": {
