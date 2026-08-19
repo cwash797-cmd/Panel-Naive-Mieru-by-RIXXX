@@ -1338,7 +1338,18 @@ function buildHy2AuthBlock(users) {
     seen.add(u.username);
     const pw = u.password || '';
     if (!pw) continue;   // no stored plaintext → cannot auth; skip safely
-    lines.push(`    ${u.username}: ${yamlQuote(pw)}`);
+    // v1.9.1 (subscriber bug): the username is a YAML MAP KEY. Emitting it bare
+    // (`ivan.petrov: "pw"`) lets the YAML parser mis-read anything the key set
+    // allows but plain-scalar semantics reinterpret — notably a DOT (some
+    // parsers/tools treat `a.b` as a nested path), a leading digit, a leading
+    // `-`, etc. A single such user corrupts the WHOLE `auth:` map, so Hy2
+    // refuses the config and the service falls over for EVERYONE. The panel
+    // also advertises `.` as allowed (USERNAME_RE), so we must honour that.
+    // Fix: quote the KEY too (same double-quoted scalar as the value). The
+    // userpass map is unchanged for plain usernames (a quoted key `"ivan"` and
+    // a bare key `ivan` denote the identical string in YAML), so existing
+    // installs auth byte-identically — only dotted/edge-case names get repaired.
+    lines.push(`    ${yamlQuote(u.username)}: ${yamlQuote(pw)}`);
   }
   // Hysteria REJECTS an empty userpass map ("invalid config: auth.userpass:
   // empty auth userpass") — neither `userpass: {}` nor a bare `{}` on the next
@@ -1349,7 +1360,7 @@ function buildHy2AuthBlock(users) {
   // user is added.
   if (lines.length === 3) {
     const rnd = crypto.randomBytes(24).toString('hex');
-    lines.push(`    __disabled_no_hy2_users__: ${yamlQuote('disabled-' + rnd)}`);
+    lines.push(`    ${yamlQuote('__disabled_no_hy2_users__')}: ${yamlQuote('disabled-' + rnd)}`);
   }
   return lines.join('\n') + '\n';
 }
