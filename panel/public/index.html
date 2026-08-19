@@ -110,6 +110,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span data-i18n="nav.settings">Server Settings</span>
       </a>
+      <a href="#" class="nav-item" data-page="federation">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/></svg>
+        <span data-i18n="nav.federation">Federation</span>
+      </a>
       <a href="#" class="nav-item" data-page="monitoring">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         <span data-i18n="nav.monitoring">Monitoring</span>
@@ -320,6 +324,7 @@
               <div class="form-group">
                 <label data-i18n="users.email">Email</label>
                 <input type="email" id="u-email" data-i18n-ph="users.emailPlaceholder" placeholder="john@example.com" />
+                <small class="form-hint" data-i18n="users.emailFedHint">Add an email so this user's configs are pulled from your other (federated) servers into one subscription link.</small>
               </div>
             </div>
             <div class="form-row">
@@ -903,6 +908,78 @@
             </div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- ── FEDERATION (multi-panel link) ─────────────────────── -->
+    <section id="page-federation" class="content-page">
+      <div class="page-header"><h3 data-i18n="federation.title">Federation</h3></div>
+      <p class="card-desc" style="margin:0 0 16px" data-i18n="federation.intro">
+        Link several panels so one subscription link delivers configs from multiple servers.
+        Users are matched across servers by their <strong>email</strong>. This panel <em>pulls</em>
+        configs from the peer nodes you add below and merges them into each user's subscription.
+      </p>
+      <div class="grid grid-2">
+
+        <!-- This server's NODE token (so OTHER panels can pull from us) -->
+        <div class="card">
+          <div class="card-header" data-i18n="federation.nodeTokenTitle">This server's node token</div>
+          <div class="card-body">
+            <p class="card-desc" data-i18n="federation.nodeTokenDesc">
+              Give this token to another (main) panel so it can pull this server's configs.
+              Keep it secret — anyone with it can request configs by email. Empty = this server
+              will not answer federation requests.
+            </p>
+            <div class="form-group">
+              <label data-i18n="federation.nodeTokenLabel">Node token</label>
+              <div class="input-with-btn">
+                <input type="text" id="s-federation-token" autocomplete="off"
+                       data-i18n-ph="federation.nodeTokenPlaceholder" placeholder="not set" />
+                <button type="button" class="btn btn-secondary" data-action="gen-federation-token"
+                        data-i18n="federation.generate">Generate</button>
+                <button type="button" class="btn btn-secondary" data-action="copy-federation-token"
+                        data-i18n="federation.copy">Copy</button>
+              </div>
+              <small class="form-hint" id="federation-token-hint" data-i18n="federation.nodeTokenHint">
+                A token is set. Regenerating replaces it — peers using the old one stop working.
+              </small>
+            </div>
+            <button class="btn btn-primary mt-2" data-action="save-federation-token"
+                    data-i18n="federation.saveNodeToken">Save node token</button>
+            <div id="federation-token-msg" class="msg-inline hidden"></div>
+          </div>
+        </div>
+
+        <!-- Peer nodes this panel pulls FROM -->
+        <div class="card">
+          <div class="card-header" data-i18n="federation.nodesTitle">Peer servers (pulled into subscriptions)</div>
+          <div class="card-body">
+            <p class="card-desc" data-i18n="federation.nodesDesc">
+              Add each other panel by its base URL and that panel's node token.
+              Disabled or unreachable peers are silently skipped — a subscription never breaks.
+            </p>
+
+            <div id="federation-nodes-list"></div>
+
+            <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+            <div class="form-group">
+              <label data-i18n="federation.addName">Name (label)</label>
+              <input type="text" id="fed-new-name" maxlength="64" placeholder="🇳🇱 NL-2" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label data-i18n="federation.addUrl">Panel base URL</label>
+              <input type="text" id="fed-new-url" placeholder="https://panel2.example.com" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label data-i18n="federation.addToken">That panel's node token</label>
+              <input type="text" id="fed-new-token" placeholder="64-hex token" autocomplete="off" />
+            </div>
+            <button class="btn btn-primary mt-2" data-action="add-federation-node"
+                    data-i18n="federation.addNode">Add peer server</button>
+            <div id="federation-nodes-msg" class="msg-inline hidden"></div>
+          </div>
+        </div>
+
       </div>
     </section>
 
