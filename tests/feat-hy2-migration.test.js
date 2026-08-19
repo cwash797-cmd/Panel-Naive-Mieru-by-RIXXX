@@ -511,7 +511,10 @@ console.log('\n[14] Subscription link: sub_token, /sub route, universal Hy2, sub
      'server: /sub/:token is PUBLIC (no requireAuth — client is not logged in)');
   ok(/function detectSubClient\(/.test(serverSrc),
      'server: detectSubClient() UA detection helper defined');
-  ok(/ua\.includes\('karing'\)/.test(serverSrc) && /ua\.includes\('shadowrocket'\)/.test(serverSrc),
+  // v1.9.2: 'karing' moved into the SINGBOX_FAMILY_UA array (alongside nekobox/
+  // exclave/throne), matched via SINGBOX_FAMILY_UA.some(...ua.includes...).
+  // Shadowrocket is still matched directly by UA.
+  ok(/SINGBOX_FAMILY_UA\s*=\s*\[[^\]]*'karing'/.test(serverSrc) && /ua\.includes\('shadowrocket'\)/.test(serverSrc),
      'server: detects Karing and Shadowrocket by User-Agent');
   ok(/if \(client === 'karing'\)/.test(serverSrc),
      'server: Karing path returns sing-box JSON (Mieru as JSON outbound)');

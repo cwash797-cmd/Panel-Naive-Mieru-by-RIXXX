@@ -47,7 +47,12 @@ function extractFn(src, name) {
 const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
                'buildShadowrocketHttpsLink',
                'buildUserUris', 'buildSingboxConfig', 'detectSubClient',
-               'buildSubUserinfo', 'subBaseUrl'];
+               'buildSubUserinfo', 'subBaseUrl',
+               // v1.9.2: buildSingboxConfig now folds the user's enabled bonus
+               // links into the sing-box JSON, so its dependency chain
+               // (normalizeBonusLinks → enabledBonusUrls → bonusUrlToSingboxOutbound)
+               // must be present in the sandbox too.
+               'normalizeBonusLinks', 'enabledBonusUrls', 'bonusUrlToSingboxOutbound'];
 
 // Mocked runtime environment.
 const sandbox = {
@@ -60,6 +65,9 @@ const sandbox = {
   isNaN,
   Array,
   Date,
+  String,
+  URL,          // v1.9.2: bonusUrlToSingboxOutbound() parses URIs via new URL()
+  JSON,         // v1.9.2: bonusUrlToSingboxOutbound() decodes vmess base64 JSON
   crypto: require('crypto'),
   // parseUserRow: the real one just JSON-parses protocols.
   parseUserRow(u) {
@@ -83,6 +91,12 @@ const sandbox = {
   }
 };
 vm.createContext(sandbox);
+// v1.9.2: detectSubClient() references the module-level SINGBOX_FAMILY_UA const;
+// define it in the sandbox first so the extracted function can close over it.
+{
+  const m = serverSrc.match(/const SINGBOX_FAMILY_UA\s*=\s*\[[^\]]*\];/);
+  if (m) vm.runInContext(m[0], sandbox);
+}
 for (const n of NAMES) vm.runInContext(extractFn(serverSrc, n), sandbox);
 
 const mkUser = (protocols, extra = {}) => ({
