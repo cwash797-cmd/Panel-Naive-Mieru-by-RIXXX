@@ -439,10 +439,14 @@
     "badUrl": "Enter a valid http(s):// URL.",
     "needToken": "Enter that panel's node token.",
     "deploy": "Deploy",
-    "deployConfirm": "Deploy user \"{name}\" to all federation nodes? Each node will create (or update) a user with this email and its own local password.",
-    "deployOk": "Deployed to {ok}/{total} nodes.",
-    "deployPartial": "Deployed to {ok}/{total} nodes.",
+    "deployConfirm": "Deploy user \"{{name}}\" to all federation nodes? Each node will create (or update) a user with this email and its own local password.",
+    "deployOk": "Deployed to {{ok}}/{{total}} nodes.",
+    "deployPartial": "Deployed to {{ok}}/{{total}} nodes.",
     "deployNoNodes": "No federation nodes to deploy to.",
-    "deployNoEmail": "This user has no email — federation links users by email. Set an email first."
+    "deployNoEmail": "This user has no email — federation links users by email. Set an email first.",
+    "testConns": "Test connections",
+    "testConnsHint": "Checks each peer for DNS / TLS / token problems without changing anything.",
+    "testConnsRunning": "Testing…",
+    "testOk": "reachable, token OK"
   }
 }

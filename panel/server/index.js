@@ -2132,6 +2132,61 @@ app.get('/api/federation/token/generate', requireAuth, (req, res) => {
   res.json({ federationToken: crypto.randomBytes(32).toString('hex') });
 });
 
+// ── v1.10.2: federation node connectivity self-test (admin-only) ────────────
+// Diagnoses WHY a broadcast/pull can't reach a node WITHOUT changing anything on
+// the node. For each configured node it does a harmless read-only POST to that
+// node's /api/federation/fetch (the same endpoint the pull path already uses)
+// with a probe email, and classifies the outcome:
+//   • ok:true, reachable, tokenOk   → 200 JSON → connectivity + TLS + token all good
+//   • reachable:true, tokenOk:false → 404      → reached the node but token/feature wrong
+//                                                (or that node is < v1.9.6 / sub-domain
+//                                                 not exposing /api/federation/*)
+//   • reachable:false                → transport error → DNS/TLS/refused/timeout
+//     with a human-readable `error` (from describeFetchError).
+// This is the fastest way to tell a "fetch failed" apart: DNS vs TLS vs wrong
+// token vs node-not-updated. It NEVER creates or mutates anything.
+app.post('/api/federation/nodes/test', requireAuth, async (req, res) => {
+  const nodes = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const probeEmail = 'connectivity-probe@federation.local';   // won't match a real user
+  const results = await Promise.all(nodes.map(async (n) => {
+    const base = { id: n.id, name: n.name || n.url, url: n.url, enabled: n.enabled !== false };
+    if (!n.url)   return { ...base, reachable: false, tokenOk: false, error: 'no URL configured' };
+    if (!n.token) return { ...base, reachable: false, tokenOk: false, error: 'no token configured' };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FED_FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${String(n.url).replace(/\/+$/, '')}/api/federation/fetch`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': `Bearer ${n.token}` },
+        body:    JSON.stringify({ email: probeEmail }),
+        signal:  ctrl.signal,
+      });
+      if (r.status === 200) {
+        // Confirm it's really our federation endpoint (valid JSON with a uris key).
+        const data = await r.json().catch(() => null);
+        const looksReal = data && Array.isArray(data.uris);
+        return { ...base, reachable: true, tokenOk: true, status: 200,
+                 ok: !!looksReal,
+                 error: looksReal ? null : 'reached a 200 endpoint but it is not a federation node (check the URL/sub-domain)' };
+      }
+      if (r.status === 404) {
+        return { ...base, reachable: true, tokenOk: false, status: 404, ok: false,
+                 error: 'reached the node but got 404 — wrong node token, federation disabled on that node, or its sub-domain is not exposing /api/federation/* (update that node to ≥ v1.10.1 and reload Caddy)' };
+      }
+      return { ...base, reachable: true, tokenOk: false, status: r.status, ok: false,
+               error: `node returned HTTP ${r.status}` };
+    } catch (e) {
+      const why = describeFetchError(e);
+      console.warn(`[FED] node test "${n.name || n.url}" (${n.url}): ${why}`);
+      return { ...base, reachable: false, tokenOk: false, ok: false, error: why };
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+  res.json({ ok: true, results });
+});
+
 // BUG-155: a valid bcrypt token is exactly  $2[aby]$NN$<53 base64-ish chars>.
 // We use this to (a) sieve a hasher's stdout down to the one valid line and
 // (b) reject any multi-line / package-manager-polluted value before it reaches
@@ -4140,6 +4195,38 @@ app.post('/api/federation/provision', fedLimiter, (req, res) => {
 //   • Results are de-duplicated against the local URIs (passed in) so a mesh
 //     of servers sharing a flag/name can't emit the exact same line twice.
 const FED_FETCH_TIMEOUT_MS = 6000;
+
+// v1.10.2: Node's global fetch throws a bare `TypeError: fetch failed` for ANY
+// transport-level failure and hides the real reason on `err.cause`. That made
+// federation "довыпуск" errors uninformative ("fetch failed" with no hint why).
+// This turns a fetch/abort error into a short, human-actionable string so the
+// admin can tell a DNS miss from a refused port from a TLS/cert problem.
+function describeFetchError(err) {
+  if (!err) return 'request failed';
+  if (err.name === 'AbortError') return `timed out after ${FED_FETCH_TIMEOUT_MS}ms`;
+  // fetch wraps the underlying network error on .cause (may itself nest).
+  const cause = err.cause || err;
+  const code  = cause && (cause.code || cause.errno);
+  const map = {
+    ENOTFOUND:      'DNS lookup failed (sub-domain does not resolve)',
+    EAI_AGAIN:      'DNS lookup timed out',
+    ECONNREFUSED:   'connection refused (nothing is listening on that host/port)',
+    ECONNRESET:     'connection reset by the peer',
+    ETIMEDOUT:      'connection timed out',
+    EHOSTUNREACH:   'host unreachable',
+    ENETUNREACH:    'network unreachable',
+    CERT_HAS_EXPIRED:                 'TLS certificate has expired',
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE:  'TLS certificate could not be verified',
+    DEPTH_ZERO_SELF_SIGNED_CERT:      'TLS certificate is self-signed / untrusted',
+    ERR_TLS_CERT_ALTNAME_INVALID:     'TLS certificate does not match the sub-domain',
+  };
+  if (code && map[code]) return `${map[code]} (${code})`;
+  if (code) return `network error ${code}`;
+  const msg = String((cause && cause.message) || err.message || 'fetch failed');
+  // A bare "fetch failed" with no cause usually means TLS handshake / connect.
+  return msg === 'fetch failed' ? 'could not connect (DNS/TLS/network)' : msg;
+}
+
 async function fetchFederatedUris(user, localUris = [], opts = {}) {
   const email = String((user && user.email) || '').trim();
   if (!email) return [];
@@ -4321,8 +4408,12 @@ async function broadcastProvision(user) {
       return { ...base, ok: true, action: data.action || 'ok',
                username: data.username || null, subLink: data.subLink || null };
     } catch (e) {
-      return { ...base, ok: false,
-               error: (e && e.name === 'AbortError') ? 'timed out' : (e && e.message) || 'request failed' };
+      // v1.10.2: surface the REAL transport cause (DNS/TLS/refused/timeout)
+      // instead of a bare "fetch failed", and log it server-side for journalctl.
+      const why = describeFetchError(e);
+      console.warn(`[FED] provision → node "${n.name || n.url}" (${n.url}) failed: ${why}`,
+                   e && e.cause ? `[cause: ${e.cause.code || e.cause.message || e.cause}]` : '');
+      return { ...base, ok: false, error: why };
     } finally {
       clearTimeout(timer);
     }

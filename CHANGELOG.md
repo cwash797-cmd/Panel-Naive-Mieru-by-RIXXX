@@ -7,6 +7,45 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.10.2]
+
+### Fixed — broadcast toast showed literal `{ok}/{total}` (i18n interpolation)
+
+The deploy result strings used single-brace `{name}` / `{ok}` / `{total}`
+placeholders, but the panel's `t()` helper interpolates **double** braces
+`{{var}}` (like every other localized string). So the toast printed the literal
+`Довыпущено на {ok}/{total} нод.` Fixed the three `federation.deploy*` keys to
+`{{...}}` in both `ru.json` and `en.json`.
+
+### Added — diagnostics for `fetch failed` during «Довыпуск»
+
+A broadcast to an unreachable node showed a bare `fetch failed` with no hint why.
+Two additions make it actionable:
+
+- **Real transport cause.** New `describeFetchError()` unwraps Node's hidden
+  `err.cause` and maps it to a short human string — DNS miss (`ENOTFOUND`),
+  refused port (`ECONNREFUSED`), timeout, expired/untrusted **TLS certificate**,
+  etc. `broadcastProvision()` now reports that instead of `fetch failed`, and
+  logs it server-side (`journalctl -u <panel>`) per node.
+- **"Test connections" button** on the Federation page → new auth-gated,
+  **read-only** `POST /api/federation/nodes/test`. It probes each peer's
+  `/api/federation/fetch` with a harmless probe email and classifies every node:
+  reachable + token OK / reachable but 404 (wrong token, federation disabled, or
+  node not yet on ≥ v1.10.1 with its sub-domain exposing `/api/federation/*`) /
+  unreachable (with the DNS/TLS/refused/timeout reason). It never creates or
+  changes anything on any node — it's purely a diagnostic.
+
+> If «Довыпуск» still fails after both hub and nodes are on ≥ v1.10.1, click
+> **Проверить связь / Test connections** on the Federation page — it will say
+> exactly which node is failing and why (DNS vs TLS vs wrong token vs
+> not-updated).
+
+Tests: `feat-federation-broadcast.test.js` grows to **90 assertions**
+(double-brace i18n, `describeFetchError` classification, the `nodes/test`
+endpoint, the "Test connections" UI wiring).
+
+---
+
 ## [v1.10.1]
 
 ### Fixed (CRITICAL) — "Довыпуск" failed with `fetch failed` / `401 Unauthorized`

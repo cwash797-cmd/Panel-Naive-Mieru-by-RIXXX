@@ -961,6 +961,13 @@
 
             <div id="federation-nodes-list"></div>
 
+            <div class="mt-2" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="btn btn-secondary btn-sm" data-action="test-federation-nodes"
+                      data-i18n="federation.testConns">Test connections</button>
+              <small class="form-hint" data-i18n="federation.testConnsHint">Checks each peer for DNS / TLS / token problems without changing anything.</small>
+            </div>
+            <div id="federation-test-results" class="mt-2"></div>
+
             <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
             <div class="form-group">
               <label data-i18n="federation.addName">Name (label)</label>

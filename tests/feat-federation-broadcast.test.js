@@ -38,6 +38,7 @@ const ok = (c, m) => { if (c) { pass++; console.log('  \u2713 ' + m); } else { f
 const ROOT      = path.join(__dirname, '..');
 const serverSrc = fs.readFileSync(path.join(ROOT, 'panel', 'server', 'index.js'), 'utf8');
 const appSrc    = fs.readFileSync(path.join(ROOT, 'panel', 'public', 'app.js'), 'utf8');
+const htmlSrc   = fs.readFileSync(path.join(ROOT, 'panel', 'public', 'index.html'), 'utf8');
 const ru        = JSON.parse(fs.readFileSync(path.join(ROOT, 'panel', 'public', 'locales', 'ru.json'), 'utf8'));
 const en        = JSON.parse(fs.readFileSync(path.join(ROOT, 'panel', 'public', 'locales', 'en.json'), 'utf8'));
 
@@ -123,6 +124,49 @@ ok(/async function broadcastProvision\(user\)/.test(serverSrc),
   }
   ok(/catch \(e\) \{[\s\S]*ok: false/.test(seg),
      'a dead/erroring node becomes { ok:false } — never throws');
+  ok(/const why = describeFetchError\(e\);/.test(seg),
+     'v1.10.2: broadcast surfaces the REAL transport cause via describeFetchError');
+  ok(/console\.warn\(`\[FED\] provision → node/.test(seg),
+     'v1.10.2: each failing node is logged server-side (journalctl) with the cause');
+}
+
+// ── [2b] describeFetchError(): maps a bare "fetch failed" to a real reason ───
+console.log('\n[2b] server: describeFetchError() classifies transport failures');
+ok(/function describeFetchError\(err\)/.test(serverSrc),
+   'describeFetchError(err) exists');
+{
+  const t = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
+  const f = serverSrc.match(/function describeFetchError\(err\) \{[\s\S]*?\n\}/);
+  ok(!!(t && f), 'describeFetchError extracted from source');
+  if (t && f) {
+    const sandbox = { String, Object };
+    vm.createContext(sandbox);
+    vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${f[0]}\nthis.describeFetchError = describeFetchError;`, sandbox);
+    const d = sandbox.describeFetchError;
+    ok(/DNS/.test(d({ cause: { code: 'ENOTFOUND' } })), 'ENOTFOUND → DNS message');
+    ok(/refused/.test(d({ cause: { code: 'ECONNREFUSED' } })), 'ECONNREFUSED → refused message');
+    ok(/TLS/.test(d({ cause: { code: 'CERT_HAS_EXPIRED' } })), 'CERT_HAS_EXPIRED → TLS message');
+    ok(/timed out/.test(d({ name: 'AbortError' })), 'AbortError → timed out message');
+    ok(d({ message: 'fetch failed' }) !== 'fetch failed',
+       'a bare "fetch failed" (no cause) is rephrased to something actionable');
+  }
+}
+
+// ── [2c] node connectivity self-test endpoint ────────────────────────────────
+console.log('\n[2c] server: POST /api/federation/nodes/test (auth-gated, read-only)');
+ok(/app\.post\('\/api\/federation\/nodes\/test', requireAuth,/.test(serverSrc),
+   'connectivity-test route exists and is behind requireAuth');
+{
+  const segStart = serverSrc.indexOf("app.post('/api/federation/nodes/test'");
+  const seg = serverSrc.slice(segStart, serverSrc.indexOf("// BUG-155: a valid bcrypt token", segStart));
+  ok(/\/api\/federation\/fetch`/.test(seg),
+     'probes the read-only /fetch endpoint (never mutates a node)');
+  ok(/connectivity-probe@federation\.local/.test(seg),
+     'uses a probe email that cannot match a real user');
+  ok(/r\.status === 404/.test(seg) && /reached the node but got 404/.test(seg),
+     '404 ⇒ classified as reachable-but-wrong-token / node-not-updated');
+  ok(/reachable: false/.test(seg) && /describeFetchError\(e\)/.test(seg),
+     'transport error ⇒ reachable:false with a human-readable cause');
 }
 
 // ── [3] admin route: POST /api/users/:id/federation/deploy ───────────────────
@@ -181,17 +225,40 @@ ok(/confirm\(t\('federation\.deployConfirm'/.test(appSrc),
    'deploy asks for confirmation (idempotent but explicit)');
 ok(/b\.disabled = true;/.test(appSrc) && /b\.disabled = false;/.test(appSrc),
    'the button is disabled during the in-flight broadcast and re-enabled after');
+// v1.10.2: connectivity self-test button + handler
+ok(/data-action="test-federation-nodes"/.test(htmlSrc || ''),
+   'federation page has a "Test connections" button');
+ok(/case 'test-federation-nodes':\s*testFederationNodes\(/.test(appSrc),
+   'dispatcher routes test-federation-nodes → testFederationNodes()');
+ok(/async function testFederationNodes\(\)/.test(appSrc),
+   'testFederationNodes() exists');
+ok(/\/api\/federation\/nodes\/test/.test(appSrc),
+   'testFederationNodes posts to the connectivity-test endpoint');
 
 for (const [lang, dict] of [['ru', ru], ['en', en]]) {
   const f = dict.federation || {};
   ok(typeof f.deploy === 'string' && f.deploy.length > 0,
      `${lang}: federation.deploy label present`);
-  ok(typeof f.deployConfirm === 'string' && /\{name\}/.test(f.deployConfirm),
-     `${lang}: federation.deployConfirm present and interpolates {name}`);
-  ok(typeof f.deployOk === 'string' && /\{ok\}/.test(f.deployOk) && /\{total\}/.test(f.deployOk),
-     `${lang}: federation.deployOk present and interpolates {ok}/{total}`);
-  ok(typeof f.deployPartial === 'string' && /\{ok\}/.test(f.deployPartial),
-     `${lang}: federation.deployPartial present`);
+  // v1.10.2: t() interpolates DOUBLE braces {{var}} (matching the rest of the
+  // locale, e.g. users.deleteConfirm). PR-3b shipped single {var} which never
+  // interpolated → the toast literally read "{ok}/{total}". Assert the fix.
+  ok(typeof f.deployConfirm === 'string' && /\{\{name\}\}/.test(f.deployConfirm),
+     `${lang}: federation.deployConfirm interpolates {{name}} (double-brace)`);
+  ok(typeof f.deployOk === 'string' && /\{\{ok\}\}/.test(f.deployOk) && /\{\{total\}\}/.test(f.deployOk),
+     `${lang}: federation.deployOk interpolates {{ok}}/{{total}} (double-brace)`);
+  ok(typeof f.deployPartial === 'string' && /\{\{ok\}\}/.test(f.deployPartial) && /\{\{total\}\}/.test(f.deployPartial),
+     `${lang}: federation.deployPartial interpolates {{ok}}/{{total}} (double-brace)`);
+  // Detect a stray single-brace {var}: remove every {{...}} first, then any
+  // remaining {word} is a bug (would never interpolate).
+  const stripped = (f.deployConfirm + '\u0000' + f.deployOk + '\u0000' + f.deployPartial)
+    .replace(/\{\{[a-z]+\}\}/g, '');
+  ok(!/\{[a-z]+\}/.test(stripped),
+     `${lang}: no leftover single-brace {var} placeholders in deploy strings`);
+  // test-connection diagnostic keys
+  ok(typeof f.testConns === 'string' && f.testConns.length > 0,
+     `${lang}: federation.testConns label present`);
+  ok(typeof f.testOk === 'string' && f.testOk.length > 0,
+     `${lang}: federation.testOk label present`);
   ok(typeof f.deployNoNodes === 'string' && f.deployNoNodes.length > 0,
      `${lang}: federation.deployNoNodes present`);
   ok(typeof f.deployNoEmail === 'string' && f.deployNoEmail.length > 0,
@@ -229,13 +296,16 @@ function makeProvisionNode() {
 }
 
 function extractBroadcastProvision() {
-  const t = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
-  const f = serverSrc.match(/async function broadcastProvision\(user\) \{[\s\S]*?\n\}/);
-  if (!t || !f) return null;
+  const t  = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
+  const f  = serverSrc.match(/async function broadcastProvision\(user\) \{[\s\S]*?\n\}/);
+  // v1.10.2: broadcastProvision now calls describeFetchError() in its catch, so
+  // the sandbox must include it too.
+  const df = serverSrc.match(/function describeFetchError\(err\) \{[\s\S]*?\n\}/);
+  if (!t || !f || !df) return null;
   const sandbox = { cfg: {}, fetch, AbortController, setTimeout, clearTimeout, console,
-                    Promise, Set, Array, String, JSON };
+                    Promise, Set, Array, String, JSON, Object };
   vm.createContext(sandbox);
-  vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${f[0]}\nthis.broadcastProvision = broadcastProvision;`, sandbox);
+  vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${df[0]}\n${f[0]}\nthis.broadcastProvision = broadcastProvision;`, sandbox);
   return { fn: sandbox.broadcastProvision, sandbox };
 }
 
