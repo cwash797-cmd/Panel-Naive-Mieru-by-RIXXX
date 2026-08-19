@@ -114,7 +114,8 @@
     "hy2Label": "Hysteria2",
     "hy2NotInstalled": "Hysteria2 is not installed — install it in Server Settings to issue hy2 keys.",
     "hy2Col": "Hy2",
-    "emailFedHint": "Add an email so this user's configs are pulled from your other (federated) servers into one subscription link."
+    "emailFedHint": "Add an email so this user's configs are pulled from your other (federated) servers into one subscription link.",
+    "savedRefreshHint": "Saved. The list will update in a moment — refresh the page if it looks stale."
   },
   "config": {
     "downloadTitle": "Download Client Config",
