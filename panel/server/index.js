@@ -1770,7 +1770,19 @@ app.get('/api/config', requireAuth, (req, res) => {
 });
 
 app.post('/api/config', requireAuth, (req, res) => {
-  const prevSubBase = cfg.subBaseUrl || '';
+  const prevSubBase = cfg.subBaseUrl  || '';
+  const prevFake    = cfg.fakeSiteUrl || '';   // v1.9.3: watch the masquerade URL too
+
+  // v1.9.3: validate fakeSiteUrl BEFORE mutating cfg, so a bad value can never
+  // be persisted or fed to buildCaddyfile(). Empty string is allowed (= reset
+  // to the built-in default fake site). Non-empty must be a plain http(s) URL.
+  if (req.body.fakeSiteUrl !== undefined) {
+    const fu = String(req.body.fakeSiteUrl || '').trim();
+    if (fu !== '' && !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(fu)) {
+      return res.status(400).json({ error: 'fakeSiteUrl must be a valid http(s):// URL or empty' });
+    }
+  }
+
   ['domain','naivePort','mieruPortStart','mieruPortEnd',
    'trafficPattern','mtu','udpEnabled','adminEmail','language',
    'probeSecret','fakeSiteUrl','subBaseUrl'].forEach(k => {
@@ -1780,17 +1792,29 @@ app.post('/api/config', requireAuth, (req, res) => {
   if (typeof cfg.subBaseUrl === 'string') {
     cfg.subBaseUrl = cfg.subBaseUrl.trim().replace(/\/+$/, '');
   }
+  // v1.9.3: normalize fakeSiteUrl (trim; strip trailing slash; allow clearing).
+  if (typeof cfg.fakeSiteUrl === 'string') {
+    cfg.fakeSiteUrl = cfg.fakeSiteUrl.trim().replace(/\/+$/, '');
+  }
   saveConfig();
-  // v1.8.7: if the sub domain changed, rebuild the Caddyfile so Caddy serves
-  // (and auto-provisions a TLS cert for) the new sub.<domain> and reverse-
-  // proxies /sub/* to the panel. Best-effort + logged; never blocks the save.
-  if ((cfg.subBaseUrl || '') !== prevSubBase) {
+
+  // v1.8.7 + v1.9.3: rebuild the Caddyfile if EITHER the sub domain OR the
+  // masquerade (fake-site) URL changed. subBaseUrl affects the sub.<domain>
+  // block + its TLS cert; fakeSiteUrl swaps the site block between file_server
+  // (default fake site) and reverse_proxy (a real site). Both are best-effort +
+  // logged and must never block the save (the config is already persisted).
+  const subChanged  = (cfg.subBaseUrl  || '') !== prevSubBase;
+  const fakeChanged = (cfg.fakeSiteUrl || '') !== prevFake;
+  if (subChanged || fakeChanged) {
     try {
       writeCaddyfileAtomic(buildCaddyfile(cfg, getAllUsers()));
       reloadCaddy();
-      console.log('[SUB] Caddy reloaded for subBaseUrl change ->', cfg.subBaseUrl || '(cleared)');
+      if (subChanged)
+        console.log('[SUB] Caddy reloaded for subBaseUrl change ->', cfg.subBaseUrl || '(cleared)');
+      if (fakeChanged)
+        console.log('[FAKE] Caddy reloaded for fakeSiteUrl change ->', cfg.fakeSiteUrl || '(default fake site)');
     } catch (e) {
-      console.warn('[SUB] Caddy reload after subBaseUrl change failed:', e && e.message);
+      console.warn('[CONFIG] Caddy reload after config change failed:', e && e.message);
     }
   }
   const { adminPassHash, ...safe } = cfg;
