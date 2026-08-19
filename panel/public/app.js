@@ -298,6 +298,7 @@ function handleDelegatedClick(e) {
     case 'copy-federation-token': copyFederationToken(); break;
     case 'save-federation-token': saveFederationToken(); break;
     case 'add-federation-node':   addFederationNode(); break;
+    case 'test-federation-nodes': testFederationNodes(); break;
     case 'toggle-federation-node': toggleFederationNode(btn.dataset.nodeId); break;
     case 'remove-federation-node': removeFederationNode(btn.dataset.nodeId); break;
 
@@ -1727,6 +1728,48 @@ async function addFederationNode() {
     toast(t('federation.nodeAdded') || 'Peer server added.', 'success');
   } catch (err) {
     showMsg('federation-nodes-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// v1.10.2: probe each peer node and show a per-node diagnostic (DNS / TLS /
+// token / not-updated) so a "fetch failed" during «Довыпуск» is actionable.
+// Read-only: the backend just POSTs a probe to each node's /fetch — nothing is
+// created or changed.
+async function testFederationNodes() {
+  const btn = document.querySelector('[data-action="test-federation-nodes"]');
+  const box = el('federation-test-results');
+  setBtnBusy(btn, true);
+  if (box) box.innerHTML = `<div class="msg-inline">${t('federation.testConnsRunning') || 'Testing…'}</div>`;
+  try {
+    const res     = await api('POST', '/api/federation/nodes/test');
+    const results = Array.isArray(res.results) ? res.results : [];
+    if (!results.length) {
+      if (box) box.innerHTML = `<div class="msg-inline">${t('federation.noNodes') || 'No peer servers yet.'}</div>`;
+      return;
+    }
+    if (box) {
+      box.innerHTML = results.map(r => {
+        const good  = r.ok === true;
+        const color = good ? 'var(--ok, #16a34a)' : 'var(--danger, #dc2626)';
+        const icon  = good ? '✓' : '✗';
+        const label = good
+          ? (t('federation.testOk') || 'reachable, token OK')
+          : (r.error || 'error');
+        const dis   = r.enabled === false ? ` <span class="badge badge-gray">${t('federation.disabled') || 'disabled'}</span>` : '';
+        return `<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="color:${color};font-weight:700">${icon}</span>
+          <div><strong>${esc(r.name || r.url || '')}</strong>${dis}
+            <div style="color:var(--muted);font-size:12px;word-break:break-all">${esc(r.url || '')}</div>
+            <div style="color:${color};font-size:13px">${esc(label)}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  } catch (err) {
+    if (box) box.innerHTML = `<div class="msg-inline msg-error">${esc(err.message)}</div>`;
+    toast(err.message, 'error');
   } finally {
     setBtnBusy(btn, false);
   }
