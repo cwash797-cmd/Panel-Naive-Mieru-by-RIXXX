@@ -7,6 +7,39 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.7]
+
+### Fixed — editing an existing user showed "failed" even though it saved
+
+Opening a previously-created user and, say, adding an email would flash a
+"failed …" error — yet after a manual page refresh (F5) the change was in fact
+saved. Nothing was actually broken on the server; it was a **client-side race**.
+
+Root cause (BUG-176 async-apply race): a user create/edit responds instantly and
+then regenerates the Caddyfile and restarts caddy/mita/hy2 **in the background**
+(`applyAllConfigsAsync`). The UI immediately did `await loadUsers()` to refresh
+the table, and because that GET travels through Caddy, it could land inside the
+brief reload window — where `fetch()` rejects with a transport error
+("Failed to fetch"). The old code surfaced that refresh error as a **save**
+error, even though the write had already persisted.
+
+Fix (front-end only, no server/behaviour change for existing installs):
+
+- **`api()`** gains an opt-in **silent, retrying GET** for *transport* errors
+  only (never retries mutations, never hides a real HTTP 4xx/5xx). Off by
+  default, so every existing call is byte-for-byte unchanged.
+- **`loadUsers(opts)`** forwards `{ retry, silent }`, and a failed *background*
+  refresh re-throws instead of painting the table red.
+- **`saveUser()`** now closes the modal on success, then refreshes with
+  `loadUsers({ retry: 3 })`; if the panel is still briefly unreachable it shows a
+  gentle "saved — the list will update shortly" hint (`users.savedRefreshHint`)
+  rather than a false "save failed".
+
+New i18n key `users.savedRefreshHint` (ru/en). Covered by
+`tests/bug-user-edit-race.test.js` (live silent-retry + source/i18n contracts).
+
+---
+
 ## [v1.9.6]
 
 ### Fixed — Federation node endpoint was not reachable from the internet

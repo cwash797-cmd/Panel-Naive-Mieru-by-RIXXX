@@ -564,16 +564,24 @@ async function loadDashboard() {
 // USERS
 // ══════════════════════════════════════════════════════════════
 
-async function loadUsers() {
+async function loadUsers(opts = {}) {
+  // v1.9.7: opts.retry (>0) enables a SILENT, retrying GET — used by saveUser()
+  // to survive the brief window where Caddy is reloading in the background after
+  // a user CRUD (BUG-176). Without a retry we render the loading row up-front;
+  // with one (a background refresh) we keep whatever is already on screen so the
+  // table doesn't flash an empty "loading…" state during the retry window.
   const tbody = el('users-tbody');
-  tbody.innerHTML = `<tr><td colspan="12" class="table-empty">${t('users.loading')}</td></tr>`;
+  const apiOpts = { retry: opts.retry, silent: !!opts.retry };
+  if (!opts.retry) {
+    tbody.innerHTML = `<tr><td colspan="12" class="table-empty">${t('users.loading')}</td></tr>`;
+  }
   try {
     // BUG-163/165: the Users table showed 0 in «Naive (МБ)»/«Mieru (МБ)» because
     //   /api/users carries NO traffic fields — the per-key figures live in
     //   /api/stats/users. Fetch both and merge the per-key numbers in.
     const [users, stats] = await Promise.all([
-      api('GET', '/api/users'),
-      api('GET', '/api/stats/users').catch(() => ({ users: [] })),
+      api('GET', '/api/users', null, apiOpts),
+      api('GET', '/api/stats/users', null, apiOpts).catch(() => ({ users: [] })),
     ]);
     // Support both the new {users,…} object and a legacy bare array.
     const statRows = Array.isArray(stats) ? stats : (stats.users || []);
@@ -592,6 +600,11 @@ async function loadUsers() {
     // Доработка 2: re-evaluate the foolproof gates whenever the key list changes.
     applyFoolproofGates(state.users.length);
   } catch (err) {
+    // v1.9.7: a background refresh (opts.retry) is triggered right after a
+    // successful save. If it still fails after all retries, DON'T paint a red
+    // error over the (already-saved) table — re-throw so saveUser() can show a
+    // gentle "refresh shortly" hint instead of a false "save failed".
+    if (opts.retry) throw err;
     tbody.innerHTML = `<tr><td colspan="12" class="table-empty" style="color:var(--red)">${esc(err.message)}</td></tr>`;
   }
 }
@@ -807,10 +820,19 @@ async function saveUser() {
       toast(t('users.created'), 'success');
       pollApplyStatus(res);   // BUG-176
     }
+    // v1.9.7: the WRITE succeeded above. The modal + list refresh below are
+    // purely cosmetic — a failure there (typically a brief connection drop while
+    // Caddy reloads in the background) must NOT be reported as a save error, or
+    // the user sees "failed" on an edit that actually persisted. So close the
+    // modal first, then refresh with a silent, retrying GET; if it still can't
+    // reach the server, hint a manual refresh instead of showing a save error.
     closeUserModal();
-    // Bug 149: refresh the list from the server so the new user appears without
-    // a manual F5 (await so any error here is surfaced, not swallowed).
-    await loadUsers();
+    try {
+      await loadUsers({ retry: 3 });   // Bug 149 + user-edit race: refresh w/ retry
+    } catch (_) {
+      toast(t('users.savedRefreshHint')
+        || 'Saved. The list will update shortly — refresh if it looks stale.', 'info');
+    }
   } catch (err) {
     showUserError(err.message);
   } finally {
@@ -2342,7 +2364,7 @@ function connectWebSocket() {
 // HTTP HELPER (Bug 10: 401 auto-redirect; toast on all errors)
 // ══════════════════════════════════════════════════════════════
 
-async function api(method, path, body) {
+async function api(method, path, body, apiOpts = {}) {
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -2350,7 +2372,31 @@ async function api(method, path, body) {
   };
   if (body) opts.body = JSON.stringify(body);
 
-  const res  = await fetch(apiUrl(path), opts);
+  // v1.9.7 (BUG user-edit race): after a user CRUD the server reloads Caddy in
+  // the background (BUG-176). Caddy reverse-proxies the panel, so a follow-up
+  // GET (e.g. loadUsers() refresh) can briefly hit a connection drop and fetch()
+  // rejects with a TypeError ("Failed to fetch") — even though the write already
+  // succeeded. That surfaced as a scary "failed" on an edit that actually saved.
+  //
+  // Fix: allow a SILENT retry for idempotent GETs on a *transport* error only
+  // (never on an HTTP status — a real 4xx/5xx is still reported immediately, and
+  // mutations are never retried so we can't double-write). Opt-in via
+  // apiOpts.retry so normal calls are unchanged.
+  const retries = (method === 'GET' && apiOpts.retry) ? apiOpts.retry : 0;
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(apiUrl(path), opts);
+      break;                                   // got an HTTP response (any status)
+    } catch (netErr) {
+      // Transport-level failure (server briefly unreachable during a reload).
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, apiOpts.retryDelay || 1200));
+        continue;
+      }
+      throw netErr;                            // out of retries → let caller decide
+    }
+  }
 
   // Bug 10: auto-redirect on 401
   if (res.status === 401) {
@@ -2364,7 +2410,7 @@ async function api(method, path, body) {
   if (!res.ok) {
     const msg = (typeof data === 'object' && data.error) ? data.error : String(data);
     const errMsg = msg || `HTTP ${res.status}`;
-    toast(errMsg, 'error');   // Bug 10: always show toast on error
+    if (!apiOpts.silent) toast(errMsg, 'error');   // Bug 10: always show toast on error
     throw new Error(errMsg);
   }
   return data;
