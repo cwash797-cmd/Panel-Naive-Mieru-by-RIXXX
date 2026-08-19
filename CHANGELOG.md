@@ -7,6 +7,38 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.3]
+
+### Added — change the fake (masquerade) site straight from the panel
+
+The fake site — what a browser sees when it opens the server domain (DPI /
+active-probe camouflage) — was only settable **at install time on the server**.
+Now the admin can change it from **Settings → Fake site (masquerade)**:
+
+- New field + **Save Fake Site** button on the settings page (ru/en i18n).
+- Enter a full `https://…` URL to **reverse-proxy a real site**, or leave the
+  field **empty** to serve the **built-in default fake site** bundled with the
+  panel. The `example.com` install-time placeholder is shown as blank.
+- `POST /api/config` now **validates** `fakeSiteUrl` (must be a full `http(s)://`
+  URL or empty — a bad value is rejected with `400` and never persisted) and,
+  on change, **rebuilds the Caddyfile + reloads Caddy** so the new camouflage
+  goes live immediately — no SSH needed.
+
+### Fixed — fakeSiteUrl changes now actually take effect
+
+Previously `fakeSiteUrl` was saved to the config but **only a `subBaseUrl`
+change triggered a Caddyfile rebuild**, so editing the fake site had no effect
+until the next unrelated rebuild. The rebuild now fires when **either**
+`subBaseUrl` **or** `fakeSiteUrl` changes.
+
+### Compatibility
+
+- No schema change, no migration. The rebuild is best-effort + logged and never
+  blocks the save. Installs that never touch the fake site keep the built-in
+  default — behaviour is unchanged.
+
+---
+
 ## [v1.9.2]
 
 ### Added — subscription support for the sing-box family (NekoBox / Exclave / Throne)

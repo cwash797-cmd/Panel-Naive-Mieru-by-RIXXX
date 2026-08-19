@@ -288,6 +288,7 @@ function handleDelegatedClick(e) {
     case 'change-naive-port':    changeNaivePort(); break;
     case 'change-mieru-ports':   changeMieruPorts(); break;
     case 'save-sub-base-url':    saveSubBaseUrl(); break;
+    case 'save-fake-site-url':   saveFakeSiteUrl(); break;
     case 'install-hy2':          installHy2(false); break;
     case 'reinstall-hy2':        installHy2(true); break;
     case 'change-hy2-port':      changeHy2Port(); break;
@@ -1132,6 +1133,14 @@ async function loadSettings() {
     el('s-mtu').value         = cfg.mtu || 1400;
     const subBaseEl = el('s-sub-base-url');
     if (subBaseEl) subBaseEl.value = cfg.subBaseUrl || '';
+    const fakeSiteEl = el('s-fake-site-url');
+    if (fakeSiteEl) {
+      // v1.9.3: show the configured fake site. The built-in placeholder
+      // default (example.com) is treated as "empty" so the field reads blank
+      // = "use the default fake site", matching the backend's semantics.
+      const fu = cfg.fakeSiteUrl || '';
+      fakeSiteEl.value = /^https?:\/\/(www\.)?example\.com\/?$/i.test(fu) ? '' : fu;
+    }
     const pattern = cfg.trafficPattern || 'NOOP';
     const radio = document.querySelector(`input[name="traffic-pattern"][value="${pattern}"]`);
     if (radio) radio.checked = true;
@@ -1444,6 +1453,33 @@ async function saveSubBaseUrl() {
     void res;
   } catch (err) {
     showMsg('sub-base-url-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// v1.9.3: change the fake (masquerade) site straight from the panel. Empty
+// clears it → the server falls back to the built-in default fake site. A
+// non-empty value must be a full http(s):// URL (the server reverse-proxies
+// it). On change the server rebuilds the Caddyfile + reloads Caddy, so the new
+// camouflage is live without touching the box over SSH.
+async function saveFakeSiteUrl() {
+  const raw = (el('s-fake-site-url').value || '').trim();
+  // Light client-side validation: allow empty, else must be a full http(s) URL.
+  if (raw && !/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(raw)) {
+    showMsg('fake-site-url-msg', t('settings.fakeSiteInvalid') || 'Введите полный https:// URL или оставьте пустым', false);
+    return;
+  }
+  const btn = document.querySelector('[data-action="save-fake-site-url"]');
+  setBtnBusy(btn, true);
+  try {
+    const res = await api('POST', '/api/config', { fakeSiteUrl: raw });
+    state.config = { ...state.config, fakeSiteUrl: raw };
+    showMsg('fake-site-url-msg', t('settings.fakeSiteSaved') || 'Фейк-сайт сохранён', true);
+    toast(t('settings.fakeSiteSaved') || 'Фейк-сайт сохранён', 'success');
+    void res;
+  } catch (err) {
+    showMsg('fake-site-url-msg', err.message, false);
   } finally {
     setBtnBusy(btn, false);
   }

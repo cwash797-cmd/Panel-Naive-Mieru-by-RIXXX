@@ -567,6 +567,23 @@
         </div>
 
         <div class="card">
+          <div class="card-header" data-i18n="settings.fakeSiteTitle">Fake site (masquerade)</div>
+          <div class="card-body">
+            <p class="card-desc" data-i18n="settings.fakeSiteDesc">The site shown to anyone who opens the server domain in a browser (camouflage for DPI/probes). Enter a full https:// URL to reverse-proxy a real site, or leave empty to serve the built-in default fake site. Changes rebuild Caddy automatically.</p>
+            <div class="form-group">
+              <label data-i18n="settings.fakeSiteLabel">Fake site URL</label>
+              <input type="text" id="s-fake-site-url" placeholder="https://www.bing.com"
+                     data-i18n-ph="settings.fakeSitePlaceholder" />
+            </div>
+            <div class="alert alert-warning">
+              <strong>⚠</strong> <span data-i18n="settings.fakeSiteNote">Pick a plausible, always-online site. Leave empty to fall back to the built-in fake site bundled with the panel.</span>
+            </div>
+            <button class="btn btn-primary mt-2" data-action="save-fake-site-url" data-i18n="settings.applyFakeSite">Save Fake Site</button>
+            <div id="fake-site-url-msg" class="msg-inline hidden"></div>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-header" data-i18n="settings.naivePortTitle">NaiveProxy Port</div>
           <div class="card-body">
             <p class="card-desc" data-i18n="settings.naivePortDesc">Change the HTTPS port for NaiveProxy. Reloads Caddy only — no service restart.</p>

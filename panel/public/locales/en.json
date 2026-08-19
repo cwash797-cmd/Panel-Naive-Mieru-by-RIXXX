@@ -296,7 +296,15 @@
     "subDomainNote": "Point an A-record for this host to this server's IP first, otherwise the TLS certificate cannot be issued.",
     "applySubDomain": "Save Sub Domain",
     "subDomainSaved": "Sub domain saved",
-    "subDomainInvalid": "Invalid URL/domain"
+    "subDomainInvalid": "Invalid URL/domain",
+    "fakeSiteTitle": "Fake site (masquerade)",
+    "fakeSiteDesc": "The site shown to anyone who opens the server domain in a browser (camouflage for DPI/probes). Enter a full https:// URL to reverse-proxy a real site, or leave empty to serve the built-in default fake site. Changes rebuild Caddy automatically.",
+    "fakeSiteLabel": "Fake site URL",
+    "fakeSitePlaceholder": "https://www.bing.com",
+    "fakeSiteNote": "Pick a plausible, always-online site. Leave empty to fall back to the built-in fake site bundled with the panel.",
+    "applyFakeSite": "Save Fake Site",
+    "fakeSiteSaved": "Fake site saved",
+    "fakeSiteInvalid": "Enter a full https:// URL or leave empty"
   },
   "monitoring": {
     "title": "Monitoring",
