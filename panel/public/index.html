@@ -967,8 +967,9 @@
               <input type="text" id="fed-new-name" maxlength="64" placeholder="🇳🇱 NL-2" autocomplete="off" />
             </div>
             <div class="form-group">
-              <label data-i18n="federation.addUrl">Panel base URL</label>
-              <input type="text" id="fed-new-url" placeholder="https://panel2.example.com" autocomplete="off" />
+              <label data-i18n="federation.addUrl">Peer sub-domain URL</label>
+              <input type="text" id="fed-new-url" placeholder="https://sub.panel2.example.com" autocomplete="off" />
+              <small class="form-hint" data-i18n="federation.addUrlHint">Use the peer's SUBSCRIPTION domain (Settings → Subscription Domain on that panel), e.g. https://sub.example.com — NOT its main/fake-site domain. Federation is served there next to /sub.</small>
             </div>
             <div class="form-group">
               <label data-i18n="federation.addToken">That panel's node token</label>

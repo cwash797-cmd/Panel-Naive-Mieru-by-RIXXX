@@ -212,12 +212,19 @@ function renderSubBlock(cfg) {
   if (!host) return '';
   const email     = String(cfg.adminEmail || '').trim();
   const panelPort = parseInt(cfg.panelPort, 10) || 3000;
+  // v1.9.6: also expose the federation NODE endpoint on the sub domain. It is a
+  // public POST that is itself hardened (bearer token, POST-only, 404-on-anything
+  // -suspicious, constant-time compare, rate-limited) — safe to sit next to /sub.
+  // A HUB panel pulls this node's configs via https://<sub-domain>/api/federation/fetch.
   return `
 
-# ── v1.8.7: subscription domain (public /sub/* → panel; TLS auto) ─────────────
+# ── v1.8.7 + v1.9.6: subscription domain (public /sub/* + federation → panel) ─
 ${host} {
   tls ${email}
   handle /sub/* {
+    reverse_proxy 127.0.0.1:${panelPort}
+  }
+  handle /api/federation/fetch {
     reverse_proxy 127.0.0.1:${panelPort}
   }
   handle {

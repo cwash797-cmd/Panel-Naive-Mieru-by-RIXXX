@@ -281,6 +281,31 @@ function staticChecks() {
   const enK = Object.keys(en.federation).sort();
   ok(JSON.stringify(ruK) === JSON.stringify(enK),
      'ru.federation and en.federation have identical key sets');
+
+  ok(!!(ru.federation.addUrlHint) && !!(en.federation.addUrlHint),
+     'addUrlHint present (tells admin to use the peer sub-domain)');
+
+  // ── [11] Caddy: federation endpoint is exposed on the SUB-domain ───────────
+  console.log('\n[11] Caddy: /api/federation/fetch proxied via the sub-domain block');
+  // (a) canonical renderer (caddyTemplate.js — used by install.sh / update.sh)
+  let caddyTemplate;
+  try { caddyTemplate = require(path.join(ROOT, 'panel', 'server', 'caddyTemplate.js')); } catch (e) {}
+  ok(!!caddyTemplate && typeof caddyTemplate.renderSubBlock === 'function',
+     'caddyTemplate.renderSubBlock is available');
+  if (caddyTemplate && caddyTemplate.renderSubBlock) {
+    const block = caddyTemplate.renderSubBlock({
+      subBaseUrl: 'https://sub.example.com', adminEmail: 'a@b.c', panelPort: 3000 });
+    ok(/sub\.example\.com \{/.test(block), 'renders the sub-domain site block');
+    ok(/handle \/sub\/\* \{/.test(block), 'still proxies /sub/* (unchanged)');
+    ok(/handle \/api\/federation\/fetch \{[\s\S]*?reverse_proxy 127\.0\.0\.1:3000/.test(block),
+       'ALSO proxies /api/federation/fetch to the loopback panel');
+    // no sub domain ⇒ no block (federation stays local-only until a sub-domain exists)
+    ok(caddyTemplate.renderSubBlock({ subBaseUrl: '' }) === '',
+       'no sub-domain ⇒ no block (federation endpoint not exposed)');
+  }
+  // (b) inline fallback in index.js must mirror the canonical block
+  ok(/handle \/api\/federation\/fetch \{\\n\s*reverse_proxy 127\.0\.0\.1:\$\{panelPort\}/.test(serverSrc),
+     'index.js inline sub-block also proxies /api/federation/fetch');
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────
