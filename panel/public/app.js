@@ -289,6 +289,7 @@ function handleDelegatedClick(e) {
     case 'change-mieru-ports':   changeMieruPorts(); break;
     case 'save-sub-base-url':    saveSubBaseUrl(); break;
     case 'save-fake-site-url':   saveFakeSiteUrl(); break;
+    case 'save-server-flag':     saveServerFlag(); break;
     case 'install-hy2':          installHy2(false); break;
     case 'reinstall-hy2':        installHy2(true); break;
     case 'change-hy2-port':      changeHy2Port(); break;
@@ -1133,6 +1134,8 @@ async function loadSettings() {
     el('s-mtu').value         = cfg.mtu || 1400;
     const subBaseEl = el('s-sub-base-url');
     if (subBaseEl) subBaseEl.value = cfg.subBaseUrl || '';
+    const flagEl = el('s-server-flag');
+    if (flagEl) flagEl.value = cfg.serverFlag || '';   // v1.9.4
     const fakeSiteEl = el('s-fake-site-url');
     if (fakeSiteEl) {
       // v1.9.3: show the configured fake site. The built-in placeholder
@@ -1480,6 +1483,25 @@ async function saveFakeSiteUrl() {
     void res;
   } catch (err) {
     showMsg('fake-site-url-msg', err.message, false);
+  } finally {
+    setBtnBusy(btn, false);
+  }
+}
+
+// v1.9.4: save the per-server display flag/prefix. Purely cosmetic — applied
+// live by the sub builders, no service restart. Empty clears it. Clients pick
+// up the new label the next time they refresh their subscription.
+async function saveServerFlag() {
+  const raw = (el('s-server-flag').value || '').trim().slice(0, 32);
+  const btn = document.querySelector('[data-action="save-server-flag"]');
+  setBtnBusy(btn, true);
+  try {
+    await api('POST', '/api/config', { serverFlag: raw });
+    state.config = { ...state.config, serverFlag: raw };
+    showMsg('server-flag-msg', t('settings.serverFlagSaved') || 'Флаг сохранён', true);
+    toast(t('settings.serverFlagSaved') || 'Флаг сохранён', 'success');
+  } catch (err) {
+    showMsg('server-flag-msg', err.message, false);
   } finally {
     setBtnBusy(btn, false);
   }

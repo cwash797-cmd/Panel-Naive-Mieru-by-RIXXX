@@ -87,6 +87,12 @@ try {
     // v1.8.7: optional dedicated subscription domain (e.g.
     // https://sub.example.com). Empty ⇒ subscription links use the panel domain.
     subBaseUrl: '',
+    // v1.9.4: optional per-SERVER display flag/prefix (e.g. "🇷🇺" or "🇳🇱 RP").
+    // Prepended to the DISPLAY NAME of every standard config (naive/mieru/hy2)
+    // this server hands out, in both the base64 URI list and the sing-box JSON.
+    // Empty ⇒ names are exactly as before. Bonus links are NOT touched — the
+    // admin puts a flag straight into the bonus URI's #fragment if they want one.
+    serverFlag: '',
     // Cascade (relay): Naive uses Caddyfile upstream; Mieru uses Variant B
     // (redsocks+iptables+mieru-client) orchestrated by scripts/cascade_mieru.sh.
     cascadeEnabled: false, cascadeNaiveUpstream: '',
@@ -1785,9 +1791,15 @@ app.post('/api/config', requireAuth, (req, res) => {
 
   ['domain','naivePort','mieruPortStart','mieruPortEnd',
    'trafficPattern','mtu','udpEnabled','adminEmail','language',
-   'probeSecret','fakeSiteUrl','subBaseUrl'].forEach(k => {
+   'probeSecret','fakeSiteUrl','subBaseUrl','serverFlag'].forEach(k => {
     if (req.body[k] !== undefined) cfg[k] = req.body[k];
   });
+  // v1.9.4: normalize serverFlag (trim only; empty allowed = no flag). It's a
+  // cosmetic display prefix, applied LIVE by the sub builders — no Caddy
+  // rebuild, no service restart, so toggling it is instant and risk-free.
+  if (typeof cfg.serverFlag === 'string') {
+    cfg.serverFlag = cfg.serverFlag.trim().slice(0, 32); // cap length, keep it a label
+  }
   // v1.8.7: normalize subBaseUrl (trim; strip trailing slash; allow clearing).
   if (typeof cfg.subBaseUrl === 'string') {
     cfg.subBaseUrl = cfg.subBaseUrl.trim().replace(/\/+$/, '');
@@ -3244,7 +3256,19 @@ app.get('/api/users/:id/config/mieru', requireAuth, (req, res) => {
 //     canonical shape that imports back cleanly);
 //   • host is the raw server IP (mieru is IP-based, no SNI/TLS);
 //   • userinfo + query values are percent-encoded so odd passwords stay valid.
-function buildMierusLink({ username, password, host, ports, transport, multiplexing }) {
+// ── v1.9.4: per-server display flag/prefix ────────────────────────────────────
+// Prepend the configured serverFlag to a config's DISPLAY NAME (not its
+// credentials, host or protocol — purely cosmetic, so it can never break a
+// connection). Empty/whitespace flag ⇒ the name is returned unchanged, so
+// existing installs and clients see byte-identical labels. Used for the
+// naive/mieru/hy2 configs this server issues; bonus links are left to the admin.
+function applyServerFlag(name) {
+  const flag = String(cfg.serverFlag || '').trim();
+  const base = String(name == null ? '' : name);
+  return flag ? `${flag} ${base}`.trim() : base;
+}
+
+function buildMierusLink({ username, password, host, ports, transport, multiplexing, name }) {
   const enc = encodeURIComponent;
   const userinfo = `${enc(username)}:${enc(password)}`;
   const parts = [`profile=default`];
@@ -3253,7 +3277,11 @@ function buildMierusLink({ username, password, host, ports, transport, multiplex
     parts.push(`protocol=${enc(transport || 'TCP')}`);
   }
   if (multiplexing) parts.push(`multiplexing=${enc(multiplexing)}`);
-  return `mierus://${userinfo}@${host}?${parts.join('&')}`;
+  // v1.9.4: optional #fragment display label (carries the server flag). Clients
+  // that read the fragment show it; those that don't simply ignore it — so this
+  // is a safe, additive change. Omitted entirely when no name is supplied.
+  const frag = name ? `#${enc(name)}` : '';
+  return `mierus://${userinfo}@${host}?${parts.join('&')}${frag}`;
 }
 
 app.get('/api/users/:id/config/mieru-link', requireAuth, (req, res) => {
@@ -3288,11 +3316,14 @@ app.get('/api/users/:id/config/mieru-link', requireAuth, (req, res) => {
 // Host is the DOMAIN (Hy2 uses real TLS SNI + a shared Caddy cert), port is the
 // configurable cfg.hy2Port (default 443/udp). We percent-encode userinfo so odd
 // passwords stay valid; `insecure=0` because the cert is a real trusted one.
-function buildHy2Link({ username, password, domain, port }) {
+function buildHy2Link({ username, password, domain, port, name }) {
   const enc = encodeURIComponent;
   const userinfo = `${enc(username)}:${enc(password)}`;
   const q = `sni=${enc(domain)}&insecure=0`;
-  return `hysteria2://${userinfo}@${domain}:${port}?${q}#${enc(username)}`;
+  // v1.9.4: the #fragment is the DISPLAY label. Default to the username (old
+  // behaviour); callers pass a flagged name to prepend the server flag.
+  const label = name != null ? name : username;
+  return `hysteria2://${userinfo}@${domain}:${port}?${q}#${enc(label)}`;
 }
 
 // ── Naive share-link (naive+https://) ────────────────────────────────────────
@@ -3360,7 +3391,7 @@ function buildUserUris(user, opts = {}) {
     uris.push(buildShadowrocketHttpsLink({
       username: user.username, password,
       domain: cfg.domain, port: cfg.naivePort,
-      name: user.username
+      name: applyServerFlag(user.username)   // v1.9.4: server flag in the label
     }));
   }
   if (protos.includes('mieru')) {
@@ -3368,13 +3399,15 @@ function buildUserUris(user, opts = {}) {
       username: user.username, password,
       host: cfg.serverIp || cfg.domain,
       ports: [mieruPort], transport: 'TCP',
-      multiplexing: 'MULTIPLEXING_HIGH'
+      multiplexing: 'MULTIPLEXING_HIGH',
+      name: applyServerFlag(user.username)   // v1.9.4: server flag in the label
     }));
   }
   if (protos.includes('hy2') && cfg.stack && cfg.stack.hy2) {
     uris.push(buildHy2Link({
       username: user.username, password,
-      domain: cfg.domain, port: parseInt(cfg.hy2Port, 10) || 443
+      domain: cfg.domain, port: parseInt(cfg.hy2Port, 10) || 443,
+      name: applyServerFlag(user.username)   // v1.9.4: server flag in the label
     }));
   }
   return uris;
@@ -3530,10 +3563,18 @@ function buildSingboxConfig(user, opts = {}) {
   const proxyOutbounds = [];
   const selectTags     = [];
 
+  // v1.9.4: the outbound `tag` is BOTH the client-visible node name AND the id
+  // the urltest selector references. We prepend the server flag to the tag and
+  // push the SAME flagged string into selectTags, so the reference stays valid
+  // while the client shows e.g. "🇷🇺 naive-out". Empty flag ⇒ tags are exactly
+  // "naive-out"/"mieru-out"/"hy2-out" as before (byte-identical for old installs).
+  const tagFor = base => applyServerFlag(base);
+
   if (protos.includes('naive')) {
-    selectTags.push('naive-out');
+    const tag = tagFor('naive-out');
+    selectTags.push(tag);
     proxyOutbounds.push({
-      type: 'naive', tag: 'naive-out',
+      type: 'naive', tag,
       server: cfg.domain, server_port: cfg.naivePort,
       username: user.username, password,
       quic: false,
@@ -3541,9 +3582,10 @@ function buildSingboxConfig(user, opts = {}) {
     });
   }
   if (protos.includes('mieru')) {
-    selectTags.push('mieru-out');
+    const tag = tagFor('mieru-out');
+    selectTags.push(tag);
     proxyOutbounds.push({
-      type: 'mieru', tag: 'mieru-out',
+      type: 'mieru', tag,
       server: cfg.serverIp || cfg.domain,
       server_port: mieruPort,
       transport: 'TCP',
@@ -3552,7 +3594,8 @@ function buildSingboxConfig(user, opts = {}) {
     });
   }
   if (protos.includes('hy2') && cfg.stack && cfg.stack.hy2) {
-    selectTags.push('hy2-out');
+    const tag = tagFor('hy2-out');
+    selectTags.push(tag);
     proxyOutbounds.push({
       // sing-box Hysteria2 outbound. Host is the DOMAIN (real TLS SNI + shared
       // Caddy cert); server_name pins SNI.
@@ -3564,7 +3607,7 @@ function buildSingboxConfig(user, opts = {}) {
       // hysteria2 outbound has only a single `password` field. Therefore we must
       // hand sing-box the combined `username:password` string as the password,
       // otherwise auth fails and Karing shows the red warning triangle.
-      type: 'hysteria2', tag: 'hy2-out',
+      type: 'hysteria2', tag,
       server: cfg.domain, server_port: parseInt(cfg.hy2Port, 10) || 443,
       password: `${user.username}:${password}`,
       tls: { enabled: true, server_name: cfg.domain, insecure: false }

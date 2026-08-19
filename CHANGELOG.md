@@ -7,6 +7,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.4]
+
+### Added — per-server display flag / label on all issued configs
+
+The admin can now set a cosmetic **flag/prefix** (e.g. `🇷🇺` or `🇳🇱 RP`) in
+**Settings → Server flag / label**. It is prepended to the **display name** of
+every standard config this server hands out — **naive / mieru / hy2** — in
+**both** the base64 URI list (Shadowrocket / Happ / v2ray) **and** the sing-box
+JSON (Karing / NekoBox / Exclave / Throne):
+
+- base64 path — the flag goes into the label: naive `?remarks=`, and the
+  `#fragment` of the mieru and hy2 URIs.
+- sing-box path — the outbound `tag` (which is both the client-visible node
+  name **and** the urltest selector reference) is prefixed with the flag; the
+  selector references are prefixed identically, so they always resolve.
+
+It is a **label only** — it never touches credentials, host, port or protocol,
+so it can never break a connection. Applied **live** by the sub builders: no
+Caddy rebuild, no service restart — toggling it is instant, and clients pick up
+the new name on their next subscription refresh.
+
+**Bonus links are intentionally NOT flagged** — the admin puts a flag straight
+into the bonus link's own `#fragment` if they want one.
+
+Also lays groundwork for panel-linking (#3): when configs from several servers
+are merged into one subscription, each server's own flag makes it obvious which
+node a config belongs to.
+
+### Compatibility
+
+- No schema change, no migration. `serverFlag` defaults to empty, and an empty
+  flag produces **byte-identical** output to v1.9.3 (hy2 URI still `#username`,
+  sing-box tags still `naive-out`/`mieru-out`/`hy2-out`). Existing installs and
+  clients are unaffected until the admin sets a flag.
+
+---
+
 ## [v1.9.3]
 
 ### Added — change the fake (masquerade) site straight from the panel

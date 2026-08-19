@@ -47,7 +47,9 @@ function extractFn(src, name) {
 // Functions under test + their dependencies.
 const NAMES = ['normalizeBonusLinks', 'enabledBonusUrls',
                'buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
-               'buildShadowrocketHttpsLink', 'buildUserUris', 'parseUserRow'];
+               'buildShadowrocketHttpsLink', 'buildUserUris', 'parseUserRow',
+               // v1.9.4: buildUserUris labels configs via applyServerFlag().
+               'applyServerFlag'];
 
 const sandbox = {
   encodeURIComponent,

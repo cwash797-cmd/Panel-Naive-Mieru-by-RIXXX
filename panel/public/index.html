@@ -567,6 +567,20 @@
         </div>
 
         <div class="card">
+          <div class="card-header" data-i18n="settings.serverFlagTitle">Server flag / label</div>
+          <div class="card-body">
+            <p class="card-desc" data-i18n="settings.serverFlagDesc">Optional emoji/text prefix added to the display name of every config this server hands out (e.g. 🇷🇺 or 🇳🇱 RP). Shown in Shadowrocket, Happ, Karing/NekoBox/Throne, etc. Leave empty for no prefix. Bonus links are not touched — put a flag directly into the bonus link if you want one.</p>
+            <div class="form-group">
+              <label data-i18n="settings.serverFlagLabel">Flag / prefix</label>
+              <input type="text" id="s-server-flag" maxlength="32" placeholder="🇷🇺 RP"
+                     data-i18n-ph="settings.serverFlagPlaceholder" />
+            </div>
+            <button class="btn btn-primary mt-2" data-action="save-server-flag" data-i18n="settings.applyServerFlag">Save Flag</button>
+            <div id="server-flag-msg" class="msg-inline hidden"></div>
+          </div>
+        </div>
+
+        <div class="card">
           <div class="card-header" data-i18n="settings.fakeSiteTitle">Fake site (masquerade)</div>
           <div class="card-body">
             <p class="card-desc" data-i18n="settings.fakeSiteDesc">The site shown to anyone who opens the server domain in a browser (camouflage for DPI/probes). Enter a full https:// URL to reverse-proxy a real site, or leave empty to serve the built-in default fake site. Changes rebuild Caddy automatically.</p>
