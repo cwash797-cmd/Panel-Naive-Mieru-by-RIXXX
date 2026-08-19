@@ -3987,6 +3987,138 @@ app.post('/api/federation/fetch', fedLimiter, (req, res) => {
   }
 });
 
+// ── v1.10.0 (PR-3b): POST /api/federation/provision ─────────────────────────
+// The WRITE counterpart of /api/federation/fetch. A hub calls this on a node to
+// "довыпуск" — provision (create-or-update) the SAME user on this node, keyed by
+// email, so a single click on the hub can broadcast a user to every peer.
+//
+// Hardened IDENTICALLY to /api/federation/fetch (this is the ONLY mutating
+// federation endpoint, so its guards must be at least as strict):
+//   • POST only.
+//   • Feature OFF when no cfg.federationToken is configured ⇒ bare 404
+//     (indistinguishable from "route absent"; a probe can't detect the feature).
+//   • Bearer token required, constant-time compare (safeTokenEqual). ANY failure
+//     ⇒ the SAME bare 404 — never 401/403, never a hint.
+//   • Rate-limited by the global apiLimiter (300/min) PLUS fedLimiter (120/min).
+//
+// Idempotent upsert-by-email semantics (so re-clicking "deploy" is always safe):
+//   • email is REQUIRED (it's the cross-server key) → 400 on missing/invalid.
+//   • If a user with that email already EXISTS on this node → UPDATE their
+//     protocols / expiry / quota to match the hub. The password and sub_token
+//     are LEFT UNTOUCHED (each node keeps its own local password — a node never
+//     learns another node's password, and re-provisioning never rotates it).
+//     → { action:'updated' }.
+//   • If NO such user exists → CREATE one. Because a node never receives a
+//     password from the hub, we mint a fresh RANDOM password (24 bytes hex) and
+//     a fresh sub_token, so the user is immediately usable on this node.
+//     → { action:'created' }.
+//   • The username is derived from the request (falling back to the email
+//     local-part), de-collided against existing usernames on this node so a
+//     provision can never 409 on a username clash — it just picks a free suffix.
+//   • Returns the ready-to-share sub link for this node so the hub can show it.
+//
+// Never throws to the client: any internal failure is caught and reported as a
+// clean JSON error, so a hub's broadcast loop can summarize per-node outcomes.
+app.post('/api/federation/provision', fedLimiter, (req, res) => {
+  const notFound = () => res.status(404).type('text/plain').send('Not found');
+
+  // Feature off (no node token) ⇒ behave as if the route is absent.
+  const nodeToken = String(cfg.federationToken || '').trim();
+  if (!nodeToken) return notFound();
+
+  // Bearer token — a missing/malformed/mismatched header is a 404, not a 401.
+  const auth = String(req.headers['authorization'] || '');
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (!m) return notFound();
+  if (!safeTokenEqual(m[1].trim(), nodeToken)) return notFound();
+
+  // Authenticated peer. From here on we speak JSON errors (the caller is a
+  // trusted hub, not an anonymous probe).
+  const email = String((req.body && req.body.email) || '').trim();
+  if (!email || !EMAIL_RE.test(email))
+    return res.status(400).json({ error: 'email is required and must be valid (it is the federation key)' });
+
+  // Validate the desired protocols/quota/expiry exactly like the local create
+  // path, so a node can never be pushed an invalid config.
+  const v = validateUserInput({
+    email,
+    // username validated separately below (we de-collide it), pass a safe stub.
+    username: 'fed',
+    password: undefined,               // password is minted locally, never sent
+    protocols: (req.body && req.body.protocols),
+    quotaMB:   (req.body && req.body.quotaMB),
+    quotaGb:   (req.body && req.body.quotaGb),
+  }, false);
+  if (v.error) return res.status(400).json({ error: v.error });
+
+  const expiry = (req.body && req.body.expiry) || null;
+  if (expiry && isNaN(Date.parse(expiry)))
+    return res.status(400).json({ error: 'expiry must be a valid ISO date string' });
+
+  try {
+    const now      = new Date().toISOString();
+    const existing = getUserByEmail(email);
+
+    if (existing) {
+      // UPDATE in place — keep this node's own password + sub_token untouched.
+      const updated = {
+        ...existing,
+        protocols: JSON.stringify(v.protocols),
+        quotaMB:   v.quotaMB,
+        expiry:    expiry || existing.expiry || null,
+        updatedAt: now,
+      };
+      upsertUser(updated);
+      applyAllConfigsAsync();
+      const token = updated.sub_token || existing.sub_token;
+      return res.json({
+        ok: true, action: 'updated',
+        username: updated.username,
+        subLink: token ? `${subBaseUrl()}/sub/${token}` : null,
+      });
+    }
+
+    // CREATE — mint a random local password + sub_token. Derive a username from
+    // the request (or the email local-part) and de-collide against this node.
+    let baseName = String((req.body && req.body.username) || '').trim();
+    if (!baseName || !USERNAME_RE.test(baseName)) {
+      baseName = email.split('@')[0].replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 48) || 'fed-user';
+    }
+    let username = baseName;
+    for (let i = 2; getUserByUsername(username); i++) {
+      username = `${baseName.slice(0, 56)}-${i}`;
+    }
+
+    const password  = crypto.randomBytes(24).toString('hex');   // random per node
+    const sub_token = crypto.randomBytes(16).toString('hex');
+    const user = {
+      id:        uuidv4(),
+      email,
+      username,
+      passHash:  bcrypt.hashSync(password, 12),
+      password,
+      expiry:    expiry || null,
+      protocols: JSON.stringify(v.protocols),
+      quotaMB:   v.quotaMB,
+      usedMB:    0,
+      sub_token,
+      createdAt: now, updatedAt: now, lastSeen: null,
+    };
+    const result = createUserAtomic(user);
+    if (result.created) applyAllConfigsAsync();
+    const row   = result.user || user;
+    const token = row.sub_token || sub_token;
+    return res.json({
+      ok: true, action: result.created ? 'created' : 'updated',
+      username: row.username,
+      subLink: token ? `${subBaseUrl()}/sub/${token}` : null,
+    });
+  } catch (e) {
+    console.warn('[FED] provision failed:', e && e.message);
+    return res.status(500).json({ error: 'provision failed on node' });
+  }
+});
+
 // v1.9.5: pull configs for THIS user from every enabled federation peer NODE
 // and return the flat, de-duplicated URI list to splice into the subscription.
 //
@@ -4122,6 +4254,75 @@ async function fetchFederatedOutbounds(user, existingTags = new Set(), opts = {}
   return out;
 }
 
+// ── v1.10.0 (PR-3b): broadcastProvision(user) ───────────────────────────────
+// Hub-side counterpart of the node /api/federation/provision endpoint. Pushes
+// (create-or-update, keyed by email) THIS user to every enabled federation peer
+// so one click on the hub "довыпускает" the user across the whole mesh.
+//
+// Same safety guarantees as the read-side fetch helpers — a broadcast can NEVER
+// throw, hang, or leave the hub in a bad state:
+//   • No email ⇒ nothing to broadcast (email is the only cross-server key).
+//   • No enabled nodes ⇒ empty result (byte-identical to pre-federation).
+//   • Each peer is POSTed in PARALLEL with a hard per-node timeout (AbortController).
+//   • A slow/dead/erroring/non-200/non-JSON peer is reported as { ok:false, ... }
+//     — it never aborts the other peers and never throws.
+// Returns a per-node result array so the UI can show a summary:
+//   [{ id, name, url, ok, action?, username?, subLink?, error? }, ...]
+async function broadcastProvision(user) {
+  const email = String((user && user.email) || '').trim();
+  if (!email) return { email: null, results: [], skipped: 'no-email' };
+
+  const nodes  = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length) return { email, results: [] };
+
+  // The config we ask each node to provision. We deliberately send NO password:
+  // each node mints its own random local password (see the node endpoint).
+  const payload = {
+    email,
+    username:  user.username || undefined,
+    protocols: (() => {
+      try { return Array.isArray(user.protocols) ? user.protocols : JSON.parse(user.protocols || '[]'); }
+      catch { return undefined; }
+    })(),
+    quotaMB:   (user.quotaMB !== undefined && user.quotaMB !== null) ? user.quotaMB : undefined,
+    expiry:    user.expiry || undefined,
+  };
+
+  const results = await Promise.all(active.map(async (n) => {
+    const base = { id: n.id, name: n.name || n.url, url: n.url };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FED_FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${String(n.url).replace(/\/+$/, '')}/api/federation/provision`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': `Bearer ${n.token}` },
+        body:    JSON.stringify(payload),
+        signal:  ctrl.signal,
+      });
+      if (!r.ok) {
+        // 404 = feature off / wrong token / old node (no provision endpoint).
+        return { ...base, ok: false,
+                 error: r.status === 404 ? 'node unreachable or federation write disabled'
+                                         : `node returned HTTP ${r.status}` };
+      }
+      const data = await r.json().catch(() => null);
+      if (!data || data.ok !== true)
+        return { ...base, ok: false, error: (data && data.error) || 'invalid response from node' };
+      return { ...base, ok: true, action: data.action || 'ok',
+               username: data.username || null, subLink: data.subLink || null };
+    } catch (e) {
+      return { ...base, ok: false,
+               error: (e && e.name === 'AbortError') ? 'timed out' : (e && e.message) || 'request failed' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+
+  return { email, results };
+}
+
 app.get('/sub/:token', subLimiter, async (req, res) => {
   const user = getUserBySubToken(req.params.token);
   if (!user) return res.status(404).type('text/plain').send('Not found');
@@ -4198,6 +4399,36 @@ app.get('/api/users/:id/sub-link', requireAuth, (req, res) => {
   const base = subBaseUrl();
   const link = `${base}/sub/${token}`;
   res.json({ link, token, base, username: user.username });
+});
+
+// ── v1.10.0 (PR-3b): POST /api/users/:id/federation/deploy ──────────────────
+// Admin-only "довыпуск" — broadcast this user to every enabled federation node
+// (create-or-update, keyed by email). Idempotent: re-clicking is always safe.
+// Returns a per-node summary so the UI can show which nodes got the user.
+//   • 404 if the user doesn't exist locally.
+//   • 400 if the user has no email (email is the only cross-server key).
+//   • 200 with { ok:true, email, results:[...] } otherwise. `results` reports
+//     each node individually — a dead/old/wrong-token node is { ok:false, error }
+//     and never fails the whole request (partial success is a valid outcome).
+app.post('/api/users/:id/federation/deploy', requireAuth, async (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const email = (user.email && String(user.email).trim()) ? String(user.email).trim() : '';
+  if (!email)
+    return res.status(400).json({ error: 'This user has no email. Federation links users by email — set an email first.' });
+
+  const nodes  = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length)
+    return res.status(400).json({ error: 'No enabled federation nodes are configured.' });
+
+  try {
+    const { results } = await broadcastProvision(user);
+    return res.json({ ok: true, email, results });
+  } catch (e) {
+    console.error('[FED] deploy failed:', e && e.message);
+    return res.status(500).json({ error: 'Broadcast failed' });
+  }
 });
 
 // ── v1.9.0: personal bonus links (admin-only, per-user) ─────────────────────

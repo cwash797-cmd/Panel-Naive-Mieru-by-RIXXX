@@ -268,6 +268,7 @@ function handleDelegatedClick(e) {
     case 'edit-user':        openEditUser(btn.dataset.id); break;
     case 'delete-user':      deleteUser(btn.dataset.id, btn.dataset.username); break;
     case 'open-config':      openConfigDownload(btn.dataset.id); break;
+    case 'deploy-user':      deployUser(btn.dataset.id, btn.dataset.username); break;
     case 'close-config-modal': closeConfigModal(); break;
     case 'dl-naive-link':    downloadNaiveLink(); break;
     case 'dl-mieru-link':    downloadMieruLink(); break;
@@ -694,6 +695,17 @@ function renderUsersTable(users) {
       ? `<div class="quota-bar"><div class="quota-fill${quotaPct>80?' warn':''}" style="width:${quotaPct}%"></div></div> ${quotaPct}%`
       : `<span class="badge badge-gray">${t('users.unlimited')}</span>`;
 
+    // v1.10.0 (PR-3b): "Deploy to all nodes" (довыпуск) is only meaningful when
+    // this hub has at least one enabled federation node AND the user has an email
+    // (email is the cross-server key). Otherwise the button is hidden — keeping
+    // single-server installs byte-identical to before federation existed.
+    const fedNodes    = Array.isArray(state.config?.federationNodes) ? state.config.federationNodes : [];
+    const hasFedNodes = fedNodes.some(n => n && n.enabled !== false && n.url);
+    const canDeploy   = hasFedNodes && !!(u.email && String(u.email).trim());
+    const deployBtn   = canDeploy
+      ? `<button class="btn btn-xs btn-ghost" data-action="deploy-user" data-id="${u.id}" data-username="${esc(u.username)}">${t('federation.deploy') || 'Deploy'}</button>`
+      : '';
+
     // Bug 1 fix: use data-action + data-id instead of onclick="..."
     return `<tr>
       <td><strong>${esc(u.username)}</strong></td>
@@ -712,6 +724,7 @@ function renderUsersTable(users) {
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="btn btn-xs btn-secondary" data-action="edit-user"   data-id="${u.id}">${t('users.edit')}</button>
           <button class="btn btn-xs btn-ghost"     data-action="open-config" data-id="${u.id}">${t('users.config')}</button>
+          ${deployBtn}
           <button class="btn btn-xs btn-danger"    data-action="delete-user" data-id="${u.id}" data-username="${esc(u.username)}">${t('users.delete')}</button>
         </div>
       </td>
@@ -891,6 +904,39 @@ async function deleteUser(id, username) {
     if (typeof applyFoolproofGates === 'function') { try { await applyFoolproofGates(); } catch {} }
   } catch (err) {
     toast(err.message, 'error');
+  }
+}
+
+// v1.10.0 (PR-3b): broadcast (довыпуск) this user to every enabled federation
+// node. Idempotent create-or-update keyed by email — re-clicking is always safe.
+// Shows a per-node summary so the admin sees exactly which nodes got the user.
+async function deployUser(id, username) {
+  if (!confirm(t('federation.deployConfirm', { name: username })
+      || `Deploy "${username}" to all federation nodes?`)) return;
+  const btns = document.querySelectorAll(`[data-action="deploy-user"][data-id="${id}"]`);
+  btns.forEach(b => { b.disabled = true; });
+  try {
+    const res     = await api('POST', `/api/users/${id}/federation/deploy`);
+    const results = Array.isArray(res.results) ? res.results : [];
+    const okCount = results.filter(r => r && r.ok).length;
+    const failed  = results.filter(r => r && !r.ok);
+
+    if (!results.length) {
+      toast(t('federation.deployNoNodes') || 'No federation nodes to deploy to.', 'info');
+    } else if (!failed.length) {
+      toast(t('federation.deployOk', { ok: okCount, total: results.length })
+            || `Deployed to ${okCount}/${results.length} nodes.`, 'success');
+    } else {
+      // Partial success — name the failing nodes so the admin can act.
+      const names = failed.map(r => `${r.name || r.url}: ${r.error || 'error'}`).join('; ');
+      toast((t('federation.deployPartial', { ok: okCount, total: results.length })
+            || `Deployed to ${okCount}/${results.length} nodes.`) + ' — ' + names,
+            okCount ? 'info' : 'error');
+    }
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 

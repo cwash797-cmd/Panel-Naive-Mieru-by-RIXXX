@@ -7,6 +7,46 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.10.0]
+
+### Added — Federation broadcast provision ("довыпуск") — PR-3b
+
+Building on the read/aggregation federation from v1.9.5 (PR-3a), you can now
+**deploy a user to every linked panel with one click**. Next to each user (when
+this hub has at least one enabled federation node *and* the user has an email) a
+**«Довыпуск» / «Deploy»** button appears. Clicking it creates — or idempotently
+updates — that user on every enabled node, keyed by their **email** (the same
+cross-server key the read path already uses).
+
+- **Node side** — new `POST /api/federation/provision` endpoint, hardened
+  **identically** to `/api/federation/fetch`: feature is OFF (bare 404) unless a
+  node token is configured, requires a bearer token compared in constant time,
+  POST-only, and rate-limited by the same `fedLimiter`. It upserts by email:
+  - an **existing** user is updated (protocols / quota / expiry) — the node's
+    **own local password and subscription token are left untouched**, so a node
+    never learns another node's password and re-deploying never rotates a link;
+  - a **new** user is created with a **fresh random password minted locally on
+    that node** and its own subscription token, so it's immediately usable. The
+    username is de-collided automatically, so a deploy can never fail on a
+    username clash.
+- **Hub side** — `broadcastProvision(user)` POSTs to every enabled node **in
+  parallel** with a hard per-node timeout. A dead / old / wrong-token node is
+  reported as a per-node failure and **never aborts the rest of the broadcast**.
+- **Admin API** — `POST /api/users/:id/federation/deploy` (auth-gated) returns a
+  **per-node result summary**; the UI shows how many nodes succeeded and names
+  any that failed. The action asks for confirmation and is fully idempotent, so
+  re-clicking is always safe.
+
+Nothing changes for single-server installs: with no federation nodes configured
+the button never appears and every existing endpoint behaves byte-identically.
+
+New tests: `feat-federation-broadcast.test.js` (59 assertions — node endpoint
+hardening, hub broadcast against live throwaway nodes incl. new/known/dead/
+wrong-token/mixed-mesh cases, the no-password guarantee, admin route + UI +
+i18n contracts).
+
+---
+
 ## [v1.9.9]
 
 ### Fixed (CRITICAL) — subscription download broke with a TLS handshake error
