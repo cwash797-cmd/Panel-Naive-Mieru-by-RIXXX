@@ -3643,9 +3643,17 @@ function bonusUrlToSingboxOutbound(rawUrl, tag) {
 // dynamically from the enabled tags. This is what fixes "Hy2 missing from the
 // universal config" AND powers the Karing subscription (which needs Mieru as a
 // JSON outbound, not a URI).
-function buildSingboxConfig(user, opts = {}) {
+// ── v1.9.8: shared builder for a user's sing-box PROXY outbounds ──────────────
+// Extracted from buildSingboxConfig() so the SAME correct naive/mieru/hy2 (plus
+// bonus) outbounds can be reused by the federation endpoint. Returns
+// { proxyOutbounds, selectTags } where selectTags are the flagged tags to add to
+// the urltest/selector. `opts.tagSuffix` (e.g. "-fed-2") makes every tag unique
+// when several servers' outbounds are merged into one config (a hub pulling
+// peers). Byte-identical to the old inline code when tagSuffix is empty.
+function buildProxyOutbounds(user, opts = {}) {
   const protos   = parseUserRow(user).protocols || [];
   const password = opts.password || user.password || 'YOUR_PASSWORD';
+  const suffix   = opts.tagSuffix || '';
 
   const _ps = parseInt(cfg.mieruPortStart, 10) || 2000;
   const _pe = parseInt(cfg.mieruPortEnd,   10) || 2010;
@@ -3659,7 +3667,7 @@ function buildSingboxConfig(user, opts = {}) {
   // push the SAME flagged string into selectTags, so the reference stays valid
   // while the client shows e.g. "🇷🇺 naive-out". Empty flag ⇒ tags are exactly
   // "naive-out"/"mieru-out"/"hy2-out" as before (byte-identical for old installs).
-  const tagFor = base => applyServerFlag(base);
+  const tagFor = base => applyServerFlag(base) + suffix;
 
   if (protos.includes('naive')) {
     const tag = tagFor('naive-out');
@@ -3688,16 +3696,6 @@ function buildSingboxConfig(user, opts = {}) {
     const tag = tagFor('hy2-out');
     selectTags.push(tag);
     proxyOutbounds.push({
-      // sing-box Hysteria2 outbound. Host is the DOMAIN (real TLS SNI + shared
-      // Caddy cert); server_name pins SNI.
-      //
-      // v1.8.8 FIX (Karing red-triangle / Hy2 not connecting): the hysteria2
-      // server runs with `auth.type: userpass` (see install_hysteria.sh), so the
-      // real wire password is the pair `<username>:<password>`. The official
-      // Hysteria2 client accepts a `userpass` alias, but sing-box does NOT — its
-      // hysteria2 outbound has only a single `password` field. Therefore we must
-      // hand sing-box the combined `username:password` string as the password,
-      // otherwise auth fails and Karing shows the red warning triangle.
       type: 'hysteria2', tag,
       server: cfg.domain, server_port: parseInt(cfg.hy2Port, 10) || 443,
       password: `${user.username}:${password}`,
@@ -3705,17 +3703,23 @@ function buildSingboxConfig(user, opts = {}) {
     });
   }
 
-  // v1.9.2: the admin's personal bonus links must reach sing-box-family clients
-  // (Karing / NekoBox / Exclave / Throne) too — not just the base64 URI list.
-  // Convert each ENABLED bonus URI into a sing-box outbound; unparseable ones
-  // are silently skipped so a single bad link can never break the JSON. Tags
-  // are made unique (bonus-1, bonus-2, …) and added to the urltest selector so
-  // the client can actually pick them.
+  // Personal bonus links → sing-box outbounds (unparseable ones skipped).
   const bonusUrls = enabledBonusUrls(user);
   for (let i = 0; i < bonusUrls.length; i++) {
-    const ob = bonusUrlToSingboxOutbound(bonusUrls[i], `bonus-${i + 1}`);
+    const ob = bonusUrlToSingboxOutbound(bonusUrls[i], `bonus-${i + 1}${suffix}`);
     if (ob) { proxyOutbounds.push(ob); selectTags.push(ob.tag); }
   }
+
+  return { proxyOutbounds, selectTags };
+}
+
+function buildSingboxConfig(user, opts = {}) {
+  // v1.9.8: the naive/mieru/hy2 + bonus outbounds are now built by the shared
+  // buildProxyOutbounds() helper (so the federation endpoint emits IDENTICAL
+  // outbounds). No tagSuffix here ⇒ tags are byte-identical to old installs.
+  const { proxyOutbounds, selectTags } = buildProxyOutbounds(user, {
+    password: opts.password, port: opts.port
+  });
 
   // Fallback: if the user somehow has no proxy protocols enabled, keep the
   // config valid (direct only) rather than emitting a broken urltest.
@@ -3923,18 +3927,31 @@ app.post('/api/federation/fetch', fedLimiter, (req, res) => {
   // Authenticated peer. Look up the user by email; unknown ⇒ empty list (200).
   const email = String((req.body && req.body.email) || '').trim();
   const user = getUserByEmail(email);
-  if (!user) return res.json({ uris: [] });
+  const wantSingbox = String((req.body && req.body.format) || '').toLowerCase() === 'singbox';
+  if (!user) return res.json(wantSingbox ? { uris: [], outbounds: [] } : { uris: [] });
 
   // Same URI set the base64 /sub path produces for this user, plus their bonus
   // links — the hub will merge these into the aggregated subscription. Wrapped
   // in try/catch so a single bad user row can never 500 a peer's subscription.
+  //
+  // v1.9.8: a sing-box-family hub (NekoBox/Karing/…) asks with format:'singbox'
+  // and we ALSO return proper sing-box `outbounds`. This fixes the bug where the
+  // hub tried to translate our URI list back into outbounds — but naive
+  // (https://…) and mieru (mierus://…) URIs are NOT parseable by the hub's URI
+  // translator, so only Hy2 survived (the lone "fed-3" the field test saw). By
+  // handing over ready outbounds, all of the peer's protocols cross the link.
+  // `uris` is always included too, so an OLDER hub keeps working unchanged.
   try {
     const uris = buildUserUris(user, { port: req.body && req.body.port });
     for (const url of enabledBonusUrls(user)) uris.push(url);
+    if (wantSingbox) {
+      const { proxyOutbounds } = buildProxyOutbounds(user, { port: req.body && req.body.port });
+      return res.json({ uris, outbounds: proxyOutbounds });
+    }
     return res.json({ uris });
   } catch (e) {
     console.warn('[FED] fetch build failed:', e && e.message);
-    return res.json({ uris: [] });
+    return res.json(wantSingbox ? { uris: [], outbounds: [] } : { uris: [] });
   }
 });
 
@@ -3994,6 +4011,85 @@ async function fetchFederatedUris(user, localUris = [], opts = {}) {
   return out;
 }
 
+// v1.9.8: pull READY sing-box outbounds for THIS user from every enabled peer,
+// for sing-box-family hub clients (NekoBox / Karing / …). This replaces the old
+// lossy path where the hub translated a peer's URI list back into outbounds —
+// naive (https://…) and mieru (mierus://…) URIs are NOT parseable by that
+// translator, so only Hy2 crossed the link. We now ask each peer with
+// `format:'singbox'` and it returns proper `outbounds` for every protocol.
+//
+// Same safety guarantees as fetchFederatedUris(): parallel, hard per-node
+// timeout, dead/slow/error/non-200 peers are SILENTLY skipped, and a peer that
+// only knows the OLD protocol (returns `uris` but no `outbounds`) is handled by
+// translating whatever of its URIs we CAN parse — so an un-upgraded peer still
+// contributes at least its Hy2/VLESS/… (exactly the pre-v1.9.8 behaviour).
+//
+// Returns a flat array of sing-box outbound objects with UNIQUE tags. `existingTags`
+// (a Set) is honoured/extended so tags never collide with the local config.
+async function fetchFederatedOutbounds(user, existingTags = new Set(), opts = {}) {
+  const email = String((user && user.email) || '').trim();
+  if (!email) return [];
+  const nodes = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length) return [];
+
+  // Fetch each peer once (asking for the sing-box form). Keep node order stable
+  // so tag suffixes (-fedN) are deterministic.
+  const perNode = await Promise.all(active.map(async (n, idx) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FED_FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${String(n.url).replace(/\/+$/, '')}/api/federation/fetch`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': `Bearer ${n.token}` },
+        body:    JSON.stringify({ email, port: opts.port, format: 'singbox' }),
+        signal:  ctrl.signal,
+      });
+      if (!r.ok) return { idx, obs: [] };
+      const data = await r.json().catch(() => null);
+      if (!data) return { idx, obs: [] };
+
+      // Preferred path: the peer speaks v1.9.8 and returned ready outbounds.
+      if (Array.isArray(data.outbounds) && data.outbounds.length) {
+        const obs = data.outbounds.filter(o => o && typeof o === 'object' && o.type && o.tag);
+        return { idx, obs };
+      }
+      // Fallback: an OLD peer only sent `uris`. Translate what we can (Hy2/VLESS/
+      // VMess/Trojan/SS) — the same lossy set as before, but at least non-empty.
+      if (Array.isArray(data.uris)) {
+        const obs = [];
+        let k = 0;
+        for (const uri of data.uris) {
+          const ob = bonusUrlToSingboxOutbound(uri, `fed${idx + 1}-${++k}`);
+          if (ob) obs.push(ob);
+        }
+        return { idx, obs };
+      }
+      return { idx, obs: [] };
+    } catch (e) {
+      console.warn(`[FED] node "${n.name || n.url}" (singbox) skipped:`, e && e.message);
+      return { idx, obs: [] };
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+
+  // Merge, guaranteeing globally-unique tags (append -fedN, then -2/-3 if needed).
+  const out = [];
+  for (const { idx, obs } of perNode) {
+    for (const ob of obs) {
+      let base = `${ob.tag}-fed${idx + 1}`;
+      let tag  = base;
+      let bump = 2;
+      while (existingTags.has(tag)) tag = `${base}-${bump++}`;
+      existingTags.add(tag);
+      out.push(Object.assign({}, ob, { tag }));
+    }
+  }
+  return out;
+}
+
 app.get('/sub/:token', subLimiter, async (req, res) => {
   const user = getUserBySubToken(req.params.token);
   if (!user) return res.status(404).type('text/plain').send('Not found');
@@ -4008,20 +4104,23 @@ app.get('/sub/:token', subLimiter, async (req, res) => {
   if (client === 'karing') {
     // sing-box JSON (Mieru works here as a JSON outbound).
     const singbox = buildSingboxConfig(user, { port: req.query.port });
-    // v1.9.5: fold in configs from federation peer nodes for the SAME user
-    // (matched by email). Peers return raw URI strings; we translate each into
-    // a sing-box outbound (same path as personal bonus links) and register its
-    // tag on the selector/urltest so the JSON stays valid. Unparseable lines
-    // are skipped. A down peer contributes nothing — the JSON is unaffected.
+    // v1.9.8 FIX (federation into sing-box clients): fold in configs from peer
+    // nodes for the SAME user (by email) as READY sing-box outbounds. Previously
+    // we pulled the peer's URI list and translated each URI back into an
+    // outbound — but a peer's naive (https://…) and mieru (mierus://…) URIs are
+    // NOT parseable by that translator, so only Hy2 survived (the lone "fed-3"
+    // seen on NekoBox+). Now the peer hands us proper outbounds for EVERY
+    // protocol. Each fed outbound gets a globally-unique tag and is added to the
+    // urltest/selector so the client can actually pick it. A down/old peer still
+    // contributes what it can (see fetchFederatedOutbounds) — never breaks JSON.
     try {
-      const fedUris = await fetchFederatedUris(user, [], { port: req.query.port });
-      if (fedUris.length && singbox && Array.isArray(singbox.outbounds)) {
-        // Collect existing tags so we can also extend selector/urltest members.
+      if (singbox && Array.isArray(singbox.outbounds)) {
         const selectors = singbox.outbounds.filter(o =>
           o && (o.type === 'selector' || o.type === 'urltest') && Array.isArray(o.outbounds));
-        for (let i = 0; i < fedUris.length; i++) {
-          const ob = bonusUrlToSingboxOutbound(fedUris[i], `fed-${i + 1}`);
-          if (!ob) continue;
+        // Seed the uniqueness set with every tag already in the config.
+        const existingTags = new Set(singbox.outbounds.map(o => o && o.tag).filter(Boolean));
+        const fedObs = await fetchFederatedOutbounds(user, existingTags, { port: req.query.port });
+        for (const ob of fedObs) {
           singbox.outbounds.push(ob);
           for (const sel of selectors) sel.outbounds.push(ob.tag);
         }

@@ -55,7 +55,10 @@ const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
                'normalizeBonusLinks', 'enabledBonusUrls', 'bonusUrlToSingboxOutbound',
                // v1.9.4: buildUserUris/buildSingboxConfig now label configs via
                // applyServerFlag() (reads cfg.serverFlag). Must be in the sandbox.
-               'applyServerFlag'];
+               'applyServerFlag',
+               // v1.9.8: buildSingboxConfig now delegates its proxy-outbound
+               // construction to the shared buildProxyOutbounds(). Must be present.
+               'buildProxyOutbounds'];
 
 // Mocked runtime environment.
 const sandbox = {

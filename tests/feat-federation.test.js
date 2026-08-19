@@ -90,7 +90,7 @@ ok(/if \(!safeTokenEqual\(presented, nodeToken\)\) return notFound\(\);/.test(se
    'wrong token ⇒ 404 via constant-time compare');
 ok(/crypto\.timingSafeEqual\(ha, hb\)/.test(serverSrc),
    'token compare is constant-time (timingSafeEqual over sha256 digests)');
-ok(/const user = getUserByEmail\(email\);\s*\n\s*if \(!user\) return res\.json\(\{ uris: \[\] \}\);/.test(serverSrc),
+ok(/const user = getUserByEmail\(email\);[\s\S]*?if \(!user\) return res\.json\(wantSingbox \? \{ uris: \[\], outbounds: \[\] \} : \{ uris: \[\] \}\);/.test(serverSrc),
    'unknown email ⇒ 200 with an empty list (not an error)');
 ok(/for \(const url of enabledBonusUrls\(user\)\) uris\.push\(url\);/.test(serverSrc),
    'node returns standard URIs + the user\'s enabled bonus links');
@@ -109,10 +109,26 @@ ok(/new AbortController\(\)/.test(serverSrc) && /ctrl\.abort\(\)/.test(serverSrc
    'each peer fetch is abortable on timeout');
 ok(/console\.warn\(`\[FED\] node "\$\{n\.name \|\| n\.url\}" skipped:`/.test(serverSrc),
    'a dead/slow peer is soft-skipped (logged, not thrown)');
-ok(/const ob = bonusUrlToSingboxOutbound\(fedUris\[i\], `fed-\$\{i \+ 1\}`\)/.test(serverSrc),
-   'sing-box path translates peer URIs into outbounds (fed-N tags)');
+// v1.9.8: the sing-box path now pulls READY outbounds from peers (fixes the bug
+// where naive/mieru URIs couldn't be translated back into outbounds → only Hy2
+// crossed the link). We assert the new contract, not the old lossy translation.
+ok(/const fedObs = await fetchFederatedOutbounds\(user, existingTags, \{ port: req\.query\.port \}\)/.test(serverSrc),
+   'sing-box path pulls ready outbounds from peers (fetchFederatedOutbounds)');
 ok(/for \(const sel of selectors\) sel\.outbounds\.push\(ob\.tag\)/.test(serverSrc),
    'sing-box selector/urltest members are extended so refs resolve');
+ok(/async function fetchFederatedOutbounds\(user, existingTags = new Set\(\), opts = \{\}\)/.test(serverSrc),
+   'fetchFederatedOutbounds() defined (hub-side sing-box federation pull)');
+ok(/format: 'singbox'/.test(serverSrc),
+   'hub asks peers for the sing-box form (format:singbox)');
+ok(/const wantSingbox = String\(\(req\.body && req\.body\.format\) \|\| ''\)\.toLowerCase\(\) === 'singbox';/.test(serverSrc),
+   'node detects the singbox request format');
+ok(/const \{ proxyOutbounds \} = buildProxyOutbounds\(user, \{ port: req\.body && req\.body\.port \}\);\s*\n\s*return res\.json\(\{ uris, outbounds: proxyOutbounds \}\);/.test(serverSrc),
+   'node returns proper sing-box outbounds when singbox is requested (naive+mieru+hy2 survive)');
+ok(/function buildProxyOutbounds\(user, opts = \{\}\)/.test(serverSrc),
+   'shared buildProxyOutbounds() extracted (one source of truth for outbounds)');
+// OLD-peer fallback: if a peer only returns URIs, translate what we can.
+ok(/const ob = bonusUrlToSingboxOutbound\(uri, `fed\$\{idx \+ 1\}-\$\{\+\+k\}`\)/.test(serverSrc),
+   'old peer (uris only) → still translated as a fallback (never empty by regression)');
 
 // ── [7] LIVE: fetchFederatedUris against a real throwaway node server ────────
 console.log('\n[7] LIVE: hub fetchFederatedUris ↔ real node /api/federation/fetch');
@@ -130,6 +146,15 @@ ok(/function safeTokenEqual\(a, b\) \{[\s\S]*?crypto\.timingSafeEqual\(ha, hb\)/
 
 const NODE_TOKEN = crypto.randomBytes(32).toString('hex');
 const nodeUsers  = { 'ivan@example.com': ['naive-node-uri', 'mieru-node-uri'] };
+// v1.9.8: the peer's proper sing-box outbounds for the same user (naive + mieru
+// + hy2), returned when the hub asks with format:'singbox'.
+const nodeOutbounds = {
+  'ivan@example.com': [
+    { type: 'naive',     tag: 'naive-out', server: 'peer.example.com', server_port: 443 },
+    { type: 'mieru',     tag: 'mieru-out', server: '203.0.113.9',      server_port: 2000 },
+    { type: 'hysteria2', tag: 'hy2-out',   server: 'peer.example.com', server_port: 443 },
+  ],
+};
 
 // Throwaway node server mirroring the real endpoint's security semantics.
 const nodeSrv = http.createServer((req, res) => {
@@ -144,8 +169,32 @@ const nodeSrv = http.createServer((req, res) => {
     if (!safeTokenEqual(m[1].trim(), NODE_TOKEN)) return notFound();
     let parsed = {}; try { parsed = JSON.parse(body || '{}'); } catch {}
     const email = String(parsed.email || '').trim();
+    const wantSingbox = String(parsed.format || '').toLowerCase() === 'singbox';
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ uris: nodeUsers[email] || [] }));
+    if (wantSingbox) {
+      res.end(JSON.stringify({ uris: nodeUsers[email] || [], outbounds: nodeOutbounds[email] || [] }));
+    } else {
+      res.end(JSON.stringify({ uris: nodeUsers[email] || [] }));
+    }
+  });
+});
+
+// An OLD peer that does NOT understand format:'singbox' — it always returns only
+// `uris` (so the hub must fall back to translating what it can). We give it a
+// parseable Hy2 URI so the fallback yields a non-empty result.
+const oldNodeUsers = { 'ivan@example.com': ['hysteria2://ivan:pw@old.example.com:443?sni=old.example.com&insecure=0#ivan'] };
+const oldNodeSrv = http.createServer((req, res) => {
+  const notFound = () => { res.statusCode = 404; res.setHeader('Content-Type', 'text/plain'); res.end('Not found'); };
+  if (req.method !== 'POST' || req.url !== '/api/federation/fetch') return notFound();
+  let body = '';
+  req.on('data', c => body += c);
+  req.on('end', () => {
+    const m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i);
+    if (!m || !safeTokenEqual(m[1].trim(), NODE_TOKEN)) return notFound();
+    let parsed = {}; try { parsed = JSON.parse(body || '{}'); } catch {}
+    const email = String(parsed.email || '').trim();
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ uris: oldNodeUsers[email] || [] }));   // NO outbounds key
   });
 });
 
@@ -158,6 +207,22 @@ function extractFetchFederatedUris() {
   vm.createContext(sandbox);
   vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${f[0]}\nthis.fetchFederatedUris = fetchFederatedUris;`, sandbox);
   return { fn: sandbox.fetchFederatedUris, sandbox };
+}
+
+// v1.9.8: extract the hub-side sing-box federation pull + the URI→outbound
+// translator it needs for the old-peer fallback, then run them in one sandbox.
+function extractFetchFederatedOutbounds() {
+  const t  = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
+  const fo = serverSrc.match(/async function fetchFederatedOutbounds\(user, existingTags = new Set\(\), opts = \{\}\) \{[\s\S]*?\n\}/);
+  const tr = serverSrc.match(/function bonusUrlToSingboxOutbound\(rawUrl, tag\) \{[\s\S]*?\n\}/);
+  if (!t || !fo || !tr) return null;
+  const sandbox = { cfg: {}, fetch, AbortController, setTimeout, clearTimeout, console,
+                    Promise, Set, Array, String, JSON, Object, Buffer, URL, parseInt, decodeURIComponent };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${tr[0]}\n${fo[0]}\n` +
+    `this.fetchFederatedOutbounds = fetchFederatedOutbounds;`, sandbox);
+  return { fn: sandbox.fetchFederatedOutbounds, sandbox };
 }
 
 function run() {
@@ -214,6 +279,51 @@ function run() {
       // I: node endpoint — wrong verb → 404
       resp = await fetch(`${nodeUrl}/api/federation/fetch`, { method: 'GET' });
       ok(resp.status === 404, 'I: node GET → 404 (POST-only)');
+
+      // ── v1.9.8: fetchFederatedOutbounds() — the ACTUAL bug fix ──────────────
+      // The peer returns naive+mieru+hy2 outbounds; the hub must splice ALL of
+      // them (the old path lost naive+mieru and only kept Hy2 as "fed-3").
+      await new Promise(r2 => oldNodeSrv.listen(0, '127.0.0.1', r2));
+      const oldUrl = `http://127.0.0.1:${oldNodeSrv.address().port}`;
+      const exo = extractFetchFederatedOutbounds();
+      ok(!!(exo && exo.fn), 'fetchFederatedOutbounds extracted from source and runnable');
+      if (exo && exo.fn) {
+        const { fn: fo, sandbox: sbo } = exo;
+
+        // J: modern peer → ALL THREE protocols cross the link (was: only Hy2).
+        sbo.cfg.federationNodes = [{ id: 'n1', name: 'NL', url: nodeUrl, token: NODE_TOKEN, enabled: true }];
+        let obs = await fo({ email: 'ivan@example.com' }, new Set(), {});
+        const types = obs.map(o => o.type).sort();
+        ok(JSON.stringify(types) === JSON.stringify(['hysteria2', 'mieru', 'naive']),
+           'J: modern peer contributes naive+mieru+hy2 (not just Hy2)');
+        ok(obs.length === 3, 'J: exactly the 3 peer outbounds are merged');
+
+        // K: tags are made globally-unique against the local config.
+        const existing = new Set(['naive-out', 'mieru-out', 'hy2-out']);   // local tags
+        obs = await fo({ email: 'ivan@example.com' }, existing, {});
+        const tags = obs.map(o => o.tag);
+        ok(tags.every(tg => !['naive-out', 'mieru-out', 'hy2-out'].includes(tg)),
+           'K: fed outbound tags never collide with local tags');
+        ok(new Set(tags).size === tags.length, 'K: all fed tags are unique');
+        ok(tags.every(tg => /-fed1(\b|-)/.test(tg)), 'K: fed tags are namespaced per node (-fed1)');
+
+        // L: no email → no pull.
+        obs = await fo({ email: '' }, new Set(), {});
+        ok(obs.length === 0, 'L: user without email → no outbound pull');
+
+        // M: OLD peer (uris only) → fallback still yields the parseable Hy2.
+        sbo.cfg.federationNodes = [{ id: 'old', name: 'OldNode', url: oldUrl, token: NODE_TOKEN, enabled: true }];
+        obs = await fo({ email: 'ivan@example.com' }, new Set(), {});
+        ok(obs.length === 1 && obs[0].type === 'hysteria2',
+           'M: old peer (uris only) → fallback translates its Hy2 URI');
+
+        // N: dead peer → soft-skip, never throws.
+        sbo.cfg.federationNodes = [{ id: 'dead', url: 'http://127.0.0.1:1', token: NODE_TOKEN, enabled: true }];
+        let threwO = false;
+        try { obs = await fo({ email: 'ivan@example.com' }, new Set(), {}); } catch { threwO = true; }
+        ok(!threwO && obs.length === 0, 'N: dead peer → soft-skipped, no throw');
+      }
+      oldNodeSrv.close();
 
       nodeSrv.close();
       resolve();

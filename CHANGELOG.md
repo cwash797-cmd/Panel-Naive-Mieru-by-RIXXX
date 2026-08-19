@@ -7,6 +7,44 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.8]
+
+### Fixed — federation into sing-box clients (NekoBox+/Karing) only pulled Hy2
+
+After v1.9.6 fixed the transport, a **Shadowrocket** hub correctly pulled all 3
+of a peer's configs — but **NekoBox+ / Karing** (and the whole sing-box family)
+saw only **one** peer config, shown as `fed-3` and often flagged **"DNS
+resolution error"**. Naive and Mieru from the peer were silently missing.
+
+Root cause: the sing-box `/sub` path pulled the peer's **URI list** and tried to
+translate each URI back into a sing-box outbound. But a peer emits its Naive URI
+as `https://<base64>…` (Shadowrocket's HTTPS-proxy form) and its Mieru URI as
+`mierus://…` — **neither is understood** by the URI→outbound translator (it only
+knows vless/vmess/trojan/ss/hysteria2). So Naive and Mieru were dropped and only
+the peer's Hy2 URI survived — appearing as the lone `fed-3`.
+
+Fix — federation now hands sing-box hubs **ready-made outbounds** instead of a
+lossy URI list:
+
+- **New shared `buildProxyOutbounds(user, opts)`** — the single source of truth
+  for a user's naive/mieru/hy2 (+ bonus) sing-box outbounds. `buildSingboxConfig()`
+  now delegates to it, so behaviour is byte-identical for existing installs.
+- **Node side** — `POST /api/federation/fetch` accepts `format: "singbox"` and
+  then returns proper `{ uris, outbounds }` (every protocol correctly encoded
+  with the peer's own domain/IP + SNI, so no more DNS/parse breakage). Plain
+  requests still get `{ uris }`, so nothing else changes.
+- **Hub side** — new `fetchFederatedOutbounds()` pulls those outbounds in
+  parallel (same hard timeout + soft-skip guarantees as the URI path), gives each
+  a **globally-unique tag** (`…-fed1`, deduped against local tags) and adds it to
+  the urltest/selector. An **old peer** that only returns `uris` still contributes
+  whatever the translator can parse (unchanged fallback — never a regression).
+
+Covered by `tests/feat-federation.test.js` (now 85 assertions: live cases J–N
+prove all 3 peer protocols cross the link, tags stay unique, old-peer fallback,
+and a dead peer is soft-skipped). Full suite: **885 passed, 0 failed**.
+
+---
+
 ## [v1.9.7]
 
 ### Fixed — editing an existing user showed "failed" even though it saved
