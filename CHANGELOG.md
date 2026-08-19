@@ -7,6 +7,34 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.1]
+
+### Fixed — Hy2 crashed when a username contained a dot (subscriber report)
+
+A Hy2 user whose username contained a **dot** (e.g. `ivan.petrov`) took down
+Hysteria2 **entirely** — not just for that user. The panel writes the Hy2
+`auth.userpass` map as YAML; the password was already quoted, but the
+**username (the map KEY) was emitted bare** (`ivan.petrov: "pw"`). A dot in a
+bare YAML key is a classic footgun — a single such entry corrupts the whole
+`auth.userpass` map, Hysteria rejects the config on reload, and every Hy2
+client stops connecting. The panel also **advertises** the dot as allowed
+(`USERNAME_RE = [a-zA-Z0-9_.-]`), so the promise and the behaviour disagreed.
+
+- **Fix:** quote the map KEY too — `"ivan.petrov": "pw"` — exactly like the
+  value. In YAML a double-quoted key and a bare key denote the identical string
+  for plain names, so existing installs authenticate **byte-identically**; only
+  dotted / leading-digit / leading-dash usernames get repaired. The username
+  validator is **unchanged** (the dot stays allowed — we honour the promise
+  rather than take the feature away).
+- Also quotes the `__disabled_no_hy2_users__` sentinel key for consistency.
+
+**Tests:** new `bug-hy2-dotted-username.test.js` (14 assertions) — dotted /
+leading-digit / leading-dash / multi-dot names now emit unambiguous quoted keys
+and parse to exactly one entry; plain usernames unchanged; disabled sentinel
+still keeps the service up; validator still permits the dot.
+
+---
+
 ## [v1.9.0]
 
 ### Added — Personal "bonus links" in a client's subscription

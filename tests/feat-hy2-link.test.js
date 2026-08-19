@@ -64,17 +64,19 @@ const block = buildHy2AuthBlock([
 ok(/^auth:/m.test(block), 'block starts with auth:');
 ok(/^  type: userpass$/m.test(block), 'type: userpass present');
 ok(/^  userpass:$/m.test(block), 'userpass: map present');
-ok(/^    alice: "aaa"$/m.test(block), 'alice mapped to quoted password');
-ok(/^    bob: "bbb"$/m.test(block), 'bob mapped');
+// v1.9.1: the map KEY is now double-quoted too (dotted-username fix). For plain
+// names a quoted key == a bare key in YAML, so this is a pure hardening.
+ok(/^    "alice": "aaa"$/m.test(block), 'alice mapped to quoted password (quoted key)');
+ok(/^    "bob": "bbb"$/m.test(block), 'bob mapped (quoted key)');
 ok(!/nopw/.test(block), 'user without plaintext password is skipped');
-ok((block.match(/alice:/g) || []).length === 1, 'duplicate username emitted once');
+ok((block.match(/"alice":/g) || []).length === 1, 'duplicate username emitted once');
 
 const emptyBlock = buildHy2AuthBlock([]);
 // v1.8.2 anti-crash: Hy2 FATALs on an empty userpass map, so instead of a bare
 // `{}` we now emit a disabled sentinel entry with a random password → the map
 // is genuinely non-empty and the service stays up with zero real clients.
 ok(!/\{\}/.test(emptyBlock), 'empty pool no longer emits a bare `{}` (would FATAL)');
-ok(/^    __disabled_no_hy2_users__: ".+"$/m.test(emptyBlock),
+ok(/^    "__disabled_no_hy2_users__": ".+"$/m.test(emptyBlock),
    'empty pool emits a disabled sentinel entry (non-empty map → Hy2 stays up)');
 
 // ── spliceHy2Auth ────────────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ const cfgText = [
 
 const newBlock = buildHy2AuthBlock([{ username: 'newuser', password: 'np' }]);
 const spliced = spliceHy2Auth(cfgText, newBlock);
-ok(spliced.includes('newuser: "np"'), 'splice inserts new users');
+ok(spliced.includes('"newuser": "np"'), 'splice inserts new users');
 ok(!spliced.includes('old: "x"'), 'splice removes the old userpass entries');
 ok(spliced.includes('listen: :443'), 'splice preserves listen: directive');
 ok(spliced.includes('masquerade:'), 'splice preserves masquerade block');
