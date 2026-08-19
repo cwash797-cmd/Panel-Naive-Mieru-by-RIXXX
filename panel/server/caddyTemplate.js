@@ -212,19 +212,28 @@ function renderSubBlock(cfg) {
   if (!host) return '';
   const email     = String(cfg.adminEmail || '').trim();
   const panelPort = parseInt(cfg.panelPort, 10) || 3000;
-  // v1.9.6: also expose the federation NODE endpoint on the sub domain. It is a
-  // public POST that is itself hardened (bearer token, POST-only, 404-on-anything
-  // -suspicious, constant-time compare, rate-limited) — safe to sit next to /sub.
-  // A HUB panel pulls this node's configs via https://<sub-domain>/api/federation/fetch.
+  // v1.9.6: also expose the federation NODE endpoints on the sub domain. They are
+  // public POSTs that are EACH individually hardened (bearer token, POST-only,
+  // 404-on-anything-suspicious, constant-time compare, rate-limited) — safe to
+  // sit next to /sub. A HUB panel pulls this node's configs via
+  // https://<sub-domain>/api/federation/fetch and (v1.10.1) provisions users via
+  // https://<sub-domain>/api/federation/provision.
+  //
+  // v1.10.1 FIX: use the /api/federation/* PREFIX rather than listing /fetch
+  // alone. PR-3b added /api/federation/provision but the sub-block only proxied
+  // /fetch, so a broadcast "довыпуск" hit the sub-domain catch-all and failed
+  // (401/404) — the write path never reached the hardened handler. Matching the
+  // whole prefix exposes every federation endpoint (fetch, provision, and any
+  // future one) uniformly, and each is still gated by its own bearer token.
   return `
 
-# ── v1.8.7 + v1.9.6: subscription domain (public /sub/* + federation → panel) ─
+# ── v1.8.7 + v1.9.6 + v1.10.1: subscription domain (public /sub/* + federation → panel) ─
 ${host} {
   tls ${email}
   handle /sub/* {
     reverse_proxy 127.0.0.1:${panelPort}
   }
-  handle /api/federation/fetch {
+  handle /api/federation/* {
     reverse_proxy 127.0.0.1:${panelPort}
   }
   handle {

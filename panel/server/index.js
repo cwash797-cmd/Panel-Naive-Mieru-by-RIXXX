@@ -642,7 +642,7 @@ function buildCaddyfile(config, users) {
       // node via https://<sub-domain>/api/federation/fetch. Bearer-token +
       // POST-only + 404-on-suspicious makes it safe to sit beside /sub.
       subBlock =
-`\n\n# ── v1.8.7 + v1.9.6: subscription domain (public /sub/* + federation → panel) ─\n${subHost} {\n  tls ${config.adminEmail || ''}\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle /api/federation/fetch {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle {\n    respond "Not found" 404\n  }\n}\n`;
+`\n\n# ── v1.8.7 + v1.9.6 + v1.10.1: subscription domain (public /sub/* + federation → panel) ─\n${subHost} {\n  tls ${config.adminEmail || ''}\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle /api/federation/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle {\n    respond "Not found" 404\n  }\n}\n`;
     }
   }
 
@@ -4078,8 +4078,16 @@ app.post('/api/federation/provision', fedLimiter, (req, res) => {
       });
     }
 
-    // CREATE — mint a random local password + sub_token. Derive a username from
-    // the request (or the email local-part) and de-collide against this node.
+    // CREATE — mint a random local password + sub_token.
+    //
+    // v1.10.1: use the SAME username the hub sent (so the user looks identical
+    // across the mesh — the operator asked for this explicitly). The email is
+    // already guaranteed identical (it's the match key). We only fall back to a
+    // derived name if the hub sent no usable username, and we only append a
+    // numeric suffix if that exact username is ALREADY taken on this node by a
+    // DIFFERENT user (we're in the "no user with this email" branch, so any
+    // existing holder of the name must be someone else — appending a suffix
+    // avoids a UNIQUE(username) failure without ever touching that other user).
     let baseName = String((req.body && req.body.username) || '').trim();
     if (!baseName || !USERNAME_RE.test(baseName)) {
       baseName = email.split('@')[0].replace(/[^a-zA-Z0-9_.-]/g, '').slice(0, 48) || 'fed-user';
