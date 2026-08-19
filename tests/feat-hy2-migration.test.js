@@ -477,7 +477,11 @@ console.log('\n[14] Subscription link: sub_token, /sub route, universal Hy2, sub
   // ── Universal config now includes Hy2 + respects checkboxes ───────────────
   ok(/function buildSingboxConfig\(/.test(serverSrc),
      'server: buildSingboxConfig() shared builder defined');
-  ok(/type: 'hysteria2', tag: 'hy2-out'/.test(serverSrc),
+  // v1.9.4: the hy2 outbound tag moved from the literal 'hy2-out' to a `tag`
+  // variable (= applyServerFlag('hy2-out'), so it can carry the server flag).
+  // Assert the hysteria2 outbound is still emitted and its tag derives from
+  // the flagged 'hy2-out' base.
+  ok(/type: 'hysteria2', tag,/.test(serverSrc) && /const tag = tagFor\('hy2-out'\);/.test(serverSrc),
      'server: sing-box builder emits a Hysteria2 outbound (universal Hy2 fix)');
   // v1.8.8: Karing red-triangle fix — hy2 outbound password must be the
   // combined username:password (server auth.type = userpass; sing-box has no

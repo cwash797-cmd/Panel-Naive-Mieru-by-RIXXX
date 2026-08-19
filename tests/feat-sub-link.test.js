@@ -52,7 +52,10 @@ const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
                // links into the sing-box JSON, so its dependency chain
                // (normalizeBonusLinks → enabledBonusUrls → bonusUrlToSingboxOutbound)
                // must be present in the sandbox too.
-               'normalizeBonusLinks', 'enabledBonusUrls', 'bonusUrlToSingboxOutbound'];
+               'normalizeBonusLinks', 'enabledBonusUrls', 'bonusUrlToSingboxOutbound',
+               // v1.9.4: buildUserUris/buildSingboxConfig now label configs via
+               // applyServerFlag() (reads cfg.serverFlag). Must be in the sandbox.
+               'applyServerFlag'];
 
 // Mocked runtime environment.
 const sandbox = {
