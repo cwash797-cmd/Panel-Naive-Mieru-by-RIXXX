@@ -637,8 +637,12 @@ function buildCaddyfile(config, users) {
     const subHost = subRaw ? subRaw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim() : '';
     if (subHost) {
       const panelPort = parseInt(config.panelPort, 10) || 3000;
+      // v1.9.6: expose the hardened federation NODE endpoint on the sub domain
+      // too (mirrors caddyTemplate.renderSubBlock) so a HUB panel can pull this
+      // node via https://<sub-domain>/api/federation/fetch. Bearer-token +
+      // POST-only + 404-on-suspicious makes it safe to sit beside /sub.
       subBlock =
-`\n\n# ── v1.8.7: subscription domain (public /sub/* → panel; TLS auto) ─────────────\n${subHost} {\n  tls ${config.adminEmail || ''}\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle {\n    respond "Not found" 404\n  }\n}\n`;
+`\n\n# ── v1.8.7 + v1.9.6: subscription domain (public /sub/* + federation → panel) ─\n${subHost} {\n  tls ${config.adminEmail || ''}\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle /api/federation/fetch {\n    reverse_proxy 127.0.0.1:${panelPort}\n  }\n  handle {\n    respond "Not found" 404\n  }\n}\n`;
     }
   }
 

@@ -7,6 +7,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.9.6]
+
+### Fixed — Federation node endpoint was not reachable from the internet
+
+PR-3a added the `POST /api/federation/fetch` handler but never exposed it
+through Caddy, so a hub panel calling a peer got the peer's **fake/masquerade
+site** (e.g. a `405 Method Not Allowed` from the decoy stack) instead of the
+panel — federation silently pulled nothing.
+
+The panel is only reverse-proxied on two external surfaces: the panel subdomain
+(`/<webBasePath>/*`, behind basic-auth — unusable for peers) and the
+**subscription sub-domain** (`/sub/*`). Fix: the subscription sub-domain block
+now **also proxies `/api/federation/fetch`** to the loopback panel — next to
+`/sub`, where it belongs. The endpoint is already hardened (bearer token,
+POST-only, 404-on-anything-suspicious, constant-time compare, rate-limited), so
+it is safe to sit on the public sub-domain.
+
+Both Caddyfile renderers are patched in lockstep: the canonical
+`caddyTemplate.renderSubBlock()` (used by `install.sh` / `update.sh`) and the
+inline fallback in `index.js`.
+
+**Config for the admin:** a peer's URL in the Federation page must be that
+panel's **subscription domain** (Settings → Subscription Domain, e.g.
+`https://sub.example.com`) — **not** its main/fake-site domain. The peer node
+therefore needs a subscription domain configured. The Federation UI now says so
+(field renamed to "Peer sub-domain URL" + an explicit hint; the node-token card
+also notes the sub-domain requirement). ru/en both updated.
+
+No sub-domain configured ⇒ the block isn't emitted and the federation endpoint
+stays unexposed — behaviour is unchanged for anyone not using federation.
+
+`feat-federation.test.js` grew Caddy-routing assertions (now **70**): the sub
+block proxies both `/sub/*` and `/api/federation/fetch`, the inline fallback
+mirrors it, and no sub-domain ⇒ no block. Full suite green.
+
+---
+
 ## [v1.9.5]
 
 ### Added — Federation (multi-panel link, part 1: read + aggregation)
