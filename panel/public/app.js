@@ -269,6 +269,7 @@ function handleDelegatedClick(e) {
     case 'delete-user':      deleteUser(btn.dataset.id, btn.dataset.username); break;
     case 'open-config':      openConfigDownload(btn.dataset.id); break;
     case 'deploy-user':      deployUser(btn.dataset.id, btn.dataset.username); break;
+    case 'undeploy-user':    undeployUser(btn.dataset.id, btn.dataset.username, btn.dataset.email); break;
     case 'close-config-modal': closeConfigModal(); break;
     case 'dl-naive-link':    downloadNaiveLink(); break;
     case 'dl-mieru-link':    downloadMieruLink(); break;
@@ -706,6 +707,11 @@ function renderUsersTable(users) {
     const deployBtn   = canDeploy
       ? `<button class="btn btn-xs btn-ghost" data-action="deploy-user" data-id="${u.id}" data-username="${esc(u.username)}">${t('federation.deploy') || 'Deploy'}</button>`
       : '';
+    // v1.11.0 (PR-3c): "Undeploy" (revoke) — same visibility gate as Deploy.
+    // Broadcasts a delete-by-email to every enabled node. Confirmation-gated.
+    const undeployBtn = canDeploy
+      ? `<button class="btn btn-xs btn-ghost" data-action="undeploy-user" data-id="${u.id}" data-username="${esc(u.username)}" data-email="${esc(u.email || '')}">${t('federation.undeploy') || 'Undeploy'}</button>`
+      : '';
 
     // Bug 1 fix: use data-action + data-id instead of onclick="..."
     return `<tr>
@@ -726,6 +732,7 @@ function renderUsersTable(users) {
           <button class="btn btn-xs btn-secondary" data-action="edit-user"   data-id="${u.id}">${t('users.edit')}</button>
           <button class="btn btn-xs btn-ghost"     data-action="open-config" data-id="${u.id}">${t('users.config')}</button>
           ${deployBtn}
+          ${undeployBtn}
           <button class="btn btn-xs btn-danger"    data-action="delete-user" data-id="${u.id}" data-username="${esc(u.username)}">${t('users.delete')}</button>
         </div>
       </td>
@@ -932,6 +939,43 @@ async function deployUser(id, username) {
       const names = failed.map(r => `${r.name || r.url}: ${r.error || 'error'}`).join('; ');
       toast((t('federation.deployPartial', { ok: okCount, total: results.length })
             || `Deployed to ${okCount}/${results.length} nodes.`) + ' — ' + names,
+            okCount ? 'info' : 'error');
+    }
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btns.forEach(b => { b.disabled = false; });
+  }
+}
+
+// v1.11.0 (PR-3c): "Undeploy" (revoke) — broadcast a delete-by-email to every
+// enabled federation node so the user is removed across the whole mesh. This
+// does NOT touch the local user — deleting locally is a separate action. Guarded
+// by an explicit confirmation because it removes access on the peers.
+// Idempotent: a node that already lacks the user reports action:'absent'.
+async function undeployUser(id, username, email) {
+  if (!confirm(t('federation.undeployConfirm', { name: username })
+      || `Revoke "${username}" from ALL federation nodes? This removes the user on every peer (the local user stays).`)) return;
+  const btns = document.querySelectorAll(`[data-action="undeploy-user"][data-id="${id}"]`);
+  btns.forEach(b => { b.disabled = true; });
+  try {
+    // Send the email as a fallback so revoke works even if the local user was
+    // already deleted (the server prefers the local user's email when present).
+    const res     = await api('POST', `/api/users/${id}/federation/undeploy`,
+                              email ? { email } : undefined);
+    const results = Array.isArray(res.results) ? res.results : [];
+    const okCount = results.filter(r => r && r.ok).length;
+    const failed  = results.filter(r => r && !r.ok);
+
+    if (!results.length) {
+      toast(t('federation.deployNoNodes') || 'No federation nodes to revoke from.', 'info');
+    } else if (!failed.length) {
+      toast(t('federation.undeployOk', { ok: okCount, total: results.length })
+            || `Revoked from ${okCount}/${results.length} nodes.`, 'success');
+    } else {
+      const names = failed.map(r => `${r.name || r.url}: ${r.error || 'error'}`).join('; ');
+      toast((t('federation.undeployPartial', { ok: okCount, total: results.length })
+            || `Revoked from ${okCount}/${results.length} nodes.`) + ' — ' + names,
             okCount ? 'info' : 'error');
     }
   } catch (err) {

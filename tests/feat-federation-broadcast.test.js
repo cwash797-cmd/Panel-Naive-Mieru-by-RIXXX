@@ -60,8 +60,10 @@ ok(/app\.post\('\/api\/federation\/provision', fedLimiter,/.test(serverSrc),
    'endpoint is POST-only and rate-limited (fedLimiter, reused from /fetch)');
 {
   // Isolate the provision handler body for the hardening asserts below.
+  // v1.11.0: deprovision now sits between provision and the pull-configs comment,
+  // so anchor the slice end on the deprovision header (was the pull comment).
   const seg = serverSrc.slice(serverSrc.indexOf("app.post('/api/federation/provision'"),
-                               serverSrc.indexOf("// v1.9.5: pull configs for THIS user"));
+                               serverSrc.indexOf("// ── v1.11.0 (PR-3c): POST /api/federation/deprovision"));
   ok(/const nodeToken = String\(cfg\.federationToken \|\| ''\)\.trim\(\);\s*\n\s*if \(!nodeToken\) return notFound\(\);/.test(seg),
      'feature off (no node token) ⇒ 404, indistinguishable from missing route');
   ok(/if \(!m\) return notFound\(\);/.test(seg),
@@ -101,8 +103,10 @@ console.log('\n[2] server: broadcastProvision() contract');
 ok(/async function broadcastProvision\(user\)/.test(serverSrc),
    'broadcastProvision(user) exists');
 {
+  // v1.11.0: broadcastDeprovision now follows broadcastProvision, so anchor the
+  // slice end on the deprovision header (was app.get('/sub/:token')).
   const seg = serverSrc.slice(serverSrc.indexOf('async function broadcastProvision(user)'),
-                               serverSrc.indexOf("app.get('/sub/:token'"));
+                               serverSrc.indexOf('// ── v1.11.0 (PR-3c): broadcastDeprovision'));
   ok(/if \(!email\) return \{ email: null, results: \[\], skipped: 'no-email' \};/.test(seg),
      'no email ⇒ nothing to broadcast');
   ok(/const active = nodes\.filter\(n => n && n\.enabled !== false && n\.url && n\.token\);/.test(seg),
@@ -128,6 +132,96 @@ ok(/async function broadcastProvision\(user\)/.test(serverSrc),
      'v1.10.2: broadcast surfaces the REAL transport cause via describeFetchError');
   ok(/console\.warn\(`\[FED\] provision → node/.test(seg),
      'v1.10.2: each failing node is logged server-side (journalctl) with the cause');
+}
+
+// ── [2d] node endpoint: /api/federation/deprovision security contract ────────
+// v1.11.0 (PR-3c): the DELETE counterpart of /provision. Hardened identically.
+console.log('\n[2d] server: /api/federation/deprovision security contract');
+ok(/app\.post\('\/api\/federation\/deprovision', fedLimiter,/.test(serverSrc),
+   'deprovision endpoint is POST-only and rate-limited (fedLimiter)');
+{
+  const seg = serverSrc.slice(serverSrc.indexOf("app.post('/api/federation/deprovision'"),
+                               serverSrc.indexOf("// v1.9.5: pull configs for THIS user"));
+  ok(/const nodeToken = String\(cfg\.federationToken \|\| ''\)\.trim\(\);\s*\n\s*if \(!nodeToken\) return notFound\(\);/.test(seg),
+     'feature off (no node token) ⇒ 404 (single-server installs never delete)');
+  ok(/if \(!m\) return notFound\(\);/.test(seg),
+     'missing/malformed bearer ⇒ 404 (never 401/403)');
+  ok(/if \(!safeTokenEqual\(m\[1\]\.trim\(\), nodeToken\)\) return notFound\(\);/.test(seg),
+     'wrong token ⇒ 404 via constant-time compare');
+  ok(/if \(!email \|\| !EMAIL_RE\.test\(email\)\)/.test(seg),
+     'missing/invalid email ⇒ 400 (email is the cross-server key)');
+  ok(/const existing = getUserByEmail\(email\);/.test(seg),
+     'delete is keyed by email (getUserByEmail)');
+  ok(/if \(!existing\) \{[\s\S]*?action: 'absent'/.test(seg),
+     'unknown email ⇒ idempotent no-op success { action:\'absent\' }');
+  ok(/deleteUser\(existing\.id\);/.test(seg),
+     'existing user ⇒ deletes ONLY that row (by id resolved from the email)');
+  ok(/action: 'deleted'/.test(seg),
+     'existing user ⇒ action:deleted');
+  ok(/applyAllConfigsAsync\(\);/.test(seg),
+     'a successful delete rebuilds the node proxy configs');
+  ok(/catch \(e\) \{[\s\S]*deprovision failed on node/.test(seg),
+     'internal errors are caught → clean JSON 500 (never throws to the peer)');
+}
+
+// ── [2e] hub broadcastDeprovision(): source contract ─────────────────────────
+console.log('\n[2e] server: broadcastDeprovision() contract');
+ok(/async function broadcastDeprovision\(email\)/.test(serverSrc),
+   'broadcastDeprovision(email) exists');
+{
+  const seg = serverSrc.slice(serverSrc.indexOf('async function broadcastDeprovision(email)'),
+                               serverSrc.indexOf("app.get('/sub/:token'"));
+  ok(/if \(!key\) return \{ email: null, results: \[\], skipped: 'no-email' \};/.test(seg),
+     'no email ⇒ nothing to broadcast');
+  ok(/const active = nodes\.filter\(n => n && n\.enabled !== false && n\.url && n\.token\);/.test(seg),
+     'only enabled nodes with a url + token are targeted');
+  ok(/Promise\.all\(active\.map/.test(seg),
+     'nodes are POSTed in parallel');
+  ok(/new AbortController\(\)/.test(seg) && /setTimeout\(\(\) => ctrl\.abort\(\), FED_FETCH_TIMEOUT_MS\)/.test(seg),
+     'each node has a hard per-node timeout (AbortController)');
+  ok(/\/api\/federation\/deprovision`/.test(seg),
+     'posts to the node /api/federation/deprovision endpoint');
+  ok(/'Authorization': `Bearer \$\{n\.token\}`/.test(seg),
+     'authenticates with that node\u2019s bearer token');
+  ok(/JSON\.stringify\(\{ email: key \}\)/.test(seg),
+     'the only payload is the email key (no other user data leaks on revoke)');
+  ok(/const why = describeFetchError\(e\);/.test(seg),
+     'a dead/erroring node surfaces the real cause and never throws');
+  ok(/console\.warn\(`\[FED\] deprovision → node/.test(seg),
+     'each failing node is logged server-side (journalctl) with the cause');
+}
+
+// ── [2f] admin route: POST /api/users/:id/federation/undeploy ────────────────
+console.log('\n[2f] server: POST /api/users/:id/federation/undeploy (auth-gated)');
+ok(/app\.post\('\/api\/users\/:id\/federation\/undeploy', requireAuth,/.test(serverSrc),
+   'undeploy route is behind requireAuth');
+{
+  const seg = serverSrc.slice(serverSrc.indexOf("app.post('/api/users/:id/federation/undeploy'"),
+                               serverSrc.indexOf('// ── v1.9.0: personal bonus links'));
+  ok(/const bodyEmail = \(req\.body && req\.body\.email && String\(req\.body\.email\)\.trim\(\)\) \|\| '';/.test(seg),
+     'accepts an explicit email fallback (revoke a locally-deleted user)');
+  ok(/if \(!user && !bodyEmail\)\s*\n\s*return res\.status\(404\)/.test(seg),
+     'unknown local user AND no fallback email ⇒ 404');
+  ok(/if \(!email\)\s*\n\s*return res\.status\(400\)/.test(seg),
+     'no usable email ⇒ 400 (email is the only cross-server key)');
+  ok(/if \(!active\.length\)\s*\n\s*return res\.status\(400\)/.test(seg),
+     'no enabled federation nodes ⇒ 400');
+  ok(/await broadcastDeprovision\(email\)/.test(seg),
+     'delegates to broadcastDeprovision(email)');
+  ok(/return res\.json\(\{ ok: true, email, results \}\);/.test(seg),
+     '200 with a per-node results summary');
+}
+
+// ── [2g] SAFETY: local DELETE /api/users/:id is UNCHANGED (no auto-cascade) ───
+// The mandate is "nothing breaks for single-server installs". Deleting a user
+// locally must NOT silently reach out to the mesh — revocation is an explicit,
+// separate action. Assert the local delete route does not call the broadcast.
+console.log('\n[2g] server: local DELETE /api/users/:id does NOT auto-broadcast');
+{
+  const seg = serverSrc.slice(serverSrc.indexOf("app.delete('/api/users/:id', requireAuth"),
+                               serverSrc.indexOf("app.delete('/api/users/:id', requireAuth") + 400);
+  ok(!/broadcastDeprovision/.test(seg),
+     'local delete never calls broadcastDeprovision (no surprise cascade)');
 }
 
 // ── [2b] describeFetchError(): maps a bare "fetch failed" to a real reason ───
@@ -252,6 +346,19 @@ ok(/confirm\(t\('federation\.deployConfirm'/.test(appSrc),
    'deploy asks for confirmation (idempotent but explicit)');
 ok(/b\.disabled = true;/.test(appSrc) && /b\.disabled = false;/.test(appSrc),
    'the button is disabled during the in-flight broadcast and re-enabled after');
+// v1.11.0 (PR-3c): undeploy (revoke) button + handler
+ok(/data-action="undeploy-user"/.test(appSrc),
+   'the users table renders an undeploy-user action');
+ok(/case 'undeploy-user':\s*undeployUser\(/.test(appSrc),
+   'the click dispatcher routes undeploy-user → undeployUser()');
+ok(/async function undeployUser\(id, username, email\)/.test(appSrc),
+   'undeployUser(id, username, email) exists');
+ok(/\/api\/users\/\$\{id\}\/federation\/undeploy/.test(appSrc),
+   'undeployUser posts to the undeploy endpoint');
+ok(/confirm\(t\('federation\.undeployConfirm'/.test(appSrc),
+   'undeploy asks for explicit confirmation (it revokes access on peers)');
+ok(/const undeployBtn = canDeploy/.test(appSrc),
+   'undeploy button uses the SAME visibility gate as deploy (nodes + email)');
 // v1.10.2: connectivity self-test button + handler
 ok(/data-action="test-federation-nodes"/.test(htmlSrc || ''),
    'federation page has a "Test connections" button');
@@ -280,12 +387,22 @@ for (const [lang, dict] of [['ru', ru], ['en', en]]) {
      `${lang}: federation.deployOk interpolates {{ok}}/{{total}} (double-brace)`);
   ok(typeof f.deployPartial === 'string' && /\{\{ok\}\}/.test(f.deployPartial) && /\{\{total\}\}/.test(f.deployPartial),
      `${lang}: federation.deployPartial interpolates {{ok}}/{{total}} (double-brace)`);
+  // v1.11.0 (PR-3c): undeploy (revoke) keys — same double-brace contract.
+  ok(typeof f.undeploy === 'string' && f.undeploy.length > 0,
+     `${lang}: federation.undeploy label present`);
+  ok(typeof f.undeployConfirm === 'string' && /\{\{name\}\}/.test(f.undeployConfirm),
+     `${lang}: federation.undeployConfirm interpolates {{name}} (double-brace)`);
+  ok(typeof f.undeployOk === 'string' && /\{\{ok\}\}/.test(f.undeployOk) && /\{\{total\}\}/.test(f.undeployOk),
+     `${lang}: federation.undeployOk interpolates {{ok}}/{{total}} (double-brace)`);
+  ok(typeof f.undeployPartial === 'string' && /\{\{ok\}\}/.test(f.undeployPartial) && /\{\{total\}\}/.test(f.undeployPartial),
+     `${lang}: federation.undeployPartial interpolates {{ok}}/{{total}} (double-brace)`);
   // Detect a stray single-brace {var}: remove every {{...}} first, then any
   // remaining {word} is a bug (would never interpolate).
-  const stripped = (f.deployConfirm + '\u0000' + f.deployOk + '\u0000' + f.deployPartial)
+  const stripped = ([f.deployConfirm, f.deployOk, f.deployPartial,
+                     f.undeployConfirm, f.undeployOk, f.undeployPartial].join('\u0000'))
     .replace(/\{\{[a-z]+\}\}/g, '');
   ok(!/\{[a-z]+\}/.test(stripped),
-     `${lang}: no leftover single-brace {var} placeholders in deploy strings`);
+     `${lang}: no leftover single-brace {var} placeholders in deploy/undeploy strings`);
   // test-connection diagnostic keys
   ok(typeof f.testConns === 'string' && f.testConns.length > 0,
      `${lang}: federation.testConns label present`);
@@ -345,6 +462,42 @@ function extractBroadcastProvision() {
   vm.createContext(sandbox);
   vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${df[0]}\n${f[0]}\nthis.broadcastProvision = broadcastProvision;`, sandbox);
   return { fn: sandbox.broadcastProvision, sandbox };
+}
+
+// v1.11.0 (PR-3c): a throwaway node that authenticates like the real endpoint
+// and reports 'deleted' for a known email, 'absent' otherwise (idempotent).
+const nodeDelEmails = new Set(['known@example.com']);
+function makeDeprovisionNode() {
+  return http.createServer((req, res) => {
+    const notFound = () => { res.statusCode = 404; res.setHeader('Content-Type', 'text/plain'); res.end('Not found'); };
+    if (req.method !== 'POST' || req.url !== '/api/federation/deprovision') return notFound();
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      if (!NODE_TOKEN) return notFound();
+      const m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i);
+      if (!m || !safeTokenEqual(m[1].trim(), NODE_TOKEN)) return notFound();
+      let parsed = {}; try { parsed = JSON.parse(body || '{}'); } catch {}
+      const email = String(parsed.email || '').trim();
+      if (!email) { res.statusCode = 400; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: 'email required' })); return; }
+      const existed = nodeDelEmails.has(email);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ ok: true, action: existed ? 'deleted' : 'absent',
+                               username: existed ? email.split('@')[0] : null }));
+    });
+  });
+}
+
+function extractBroadcastDeprovision() {
+  const t  = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
+  const f  = serverSrc.match(/async function broadcastDeprovision\(email\) \{[\s\S]*?\n\}/);
+  const df = serverSrc.match(/function describeFetchError\(err\) \{[\s\S]*?\n\}/);
+  if (!t || !f || !df) return null;
+  const sandbox = { cfg: {}, fetch, AbortController, setTimeout, clearTimeout, console,
+                    Promise, Set, Array, String, JSON, Object };
+  vm.createContext(sandbox);
+  vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${df[0]}\n${f[0]}\nthis.broadcastDeprovision = broadcastDeprovision;`, sandbox);
+  return { fn: sandbox.broadcastDeprovision, sandbox };
 }
 
 function run() {
@@ -442,6 +595,71 @@ function run() {
         ok(r.results.length === 2 && good && good.ok === true && dead && dead.ok === false,
            'H: mixed mesh ⇒ good node ok, dead node failed, both surfaced');
       }
+
+      // ── v1.11.0 (PR-3c): LIVE broadcastDeprovision() against a throwaway node ──
+      const delSrv = makeDeprovisionNode();
+      await new Promise(r2 => delSrv.listen(0, '127.0.0.1', r2));
+      const delUrl = `http://127.0.0.1:${delSrv.address().port}`;
+      const dex = extractBroadcastDeprovision();
+      ok(!!(dex && dex.fn), 'broadcastDeprovision extracted from source and runnable');
+      if (dex && dex.fn) {
+        const { fn: dfn, sandbox: dsb } = dex;
+
+        // I: no email ⇒ skipped, empty results, no throw.
+        {
+          dsb.cfg.federationNodes = [{ id: 'n1', name: 'N1', url: delUrl, token: NODE_TOKEN, enabled: true }];
+          const r = await dfn('');
+          ok(Array.isArray(r.results) && r.results.length === 0 && r.skipped === 'no-email',
+             'I: no email ⇒ skipped with empty results');
+        }
+
+        // J: known email ⇒ node reports action:deleted, ok:true.
+        {
+          dsb.cfg.federationNodes = [{ id: 'n1', name: 'N1', url: delUrl, token: NODE_TOKEN, enabled: true }];
+          const r = await dfn('known@example.com');
+          ok(r.results.length === 1 && r.results[0].ok === true && r.results[0].action === 'deleted',
+             'J: known email ⇒ node reports action:deleted, ok:true');
+        }
+
+        // K: unknown email ⇒ idempotent action:absent (still ok:true).
+        {
+          const r = await dfn('ghost@example.com');
+          ok(r.results.length === 1 && r.results[0].ok === true && r.results[0].action === 'absent',
+             'K: unknown email ⇒ idempotent action:absent (ok:true)');
+        }
+
+        // L: wrong token ⇒ node 404 ⇒ { ok:false }, broadcast never throws.
+        {
+          dsb.cfg.federationNodes = [{ id: 'n1', name: 'N1', url: delUrl, token: 'WRONG', enabled: true }];
+          let threw = false; let r;
+          try { r = await dfn('known@example.com'); } catch { threw = true; }
+          ok(!threw && r.results.length === 1 && r.results[0].ok === false,
+             'L: wrong token ⇒ per-node { ok:false }, never throws');
+        }
+
+        // M: dead peer ⇒ soft { ok:false } with an error, never throws.
+        {
+          dsb.cfg.federationNodes = [{ id: 'dead', name: 'Dead', url: 'http://127.0.0.1:1', token: NODE_TOKEN, enabled: true }];
+          let threw = false; let r;
+          try { r = await dfn('known@example.com'); } catch { threw = true; }
+          ok(!threw && r.results.length === 1 && r.results[0].ok === false && typeof r.results[0].error === 'string',
+             'M: dead peer ⇒ { ok:false, error }, no throw');
+        }
+
+        // N: mixed mesh (healthy + dead) ⇒ partial success, both reported.
+        {
+          dsb.cfg.federationNodes = [
+            { id: 'n1', name: 'Good', url: delUrl, token: NODE_TOKEN, enabled: true },
+            { id: 'dead', name: 'Dead', url: 'http://127.0.0.1:1', token: NODE_TOKEN, enabled: true },
+          ];
+          const r = await dfn('known@example.com');
+          const good = r.results.find(x => x.name === 'Good');
+          const dead = r.results.find(x => x.name === 'Dead');
+          ok(r.results.length === 2 && good && good.ok === true && dead && dead.ok === false,
+             'N: mixed mesh ⇒ good node revoked, dead node failed, both surfaced');
+        }
+      }
+      delSrv.close();
 
       nodeSrv.close();
       resolve();
