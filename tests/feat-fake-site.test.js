@@ -32,8 +32,11 @@ ok(/const prevFake\s*=\s*cfg\.fakeSiteUrl/.test(serverSrc),
    'captures the previous fakeSiteUrl before mutating cfg');
 ok(/const fakeChanged\s*=\s*\(cfg\.fakeSiteUrl \|\| ''\) !== prevFake/.test(serverSrc),
    'computes fakeChanged by comparing new vs previous');
-ok(/if \(subChanged \|\| fakeChanged\)/.test(serverSrc),
-   'rebuild fires when EITHER subBaseUrl OR fakeSiteUrl changed');
+// v1.11.1: the guard gained a self-heal term (driftHeal) — rebuild still fires
+// when EITHER subBaseUrl OR fakeSiteUrl changed, plus when the on-disk Caddyfile
+// has drifted from the desired render. subChanged/fakeChanged must remain.
+ok(/if \(subChanged \|\| fakeChanged(?: \|\| driftHeal)?\)/.test(serverSrc),
+   'rebuild fires when EITHER subBaseUrl OR fakeSiteUrl changed (v1.11.1: + driftHeal self-heal)');
 ok(/writeCaddyfileAtomic\(buildCaddyfile\(cfg, getAllUsers\(\)\)\);/.test(serverSrc),
    'rebuild writes a fresh Caddyfile atomically');
 ok(/\[FAKE\] Caddy reloaded for fakeSiteUrl change/.test(serverSrc),

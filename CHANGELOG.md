@@ -7,6 +7,52 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.1]
+
+### Fixed — Caddyfile self-heal: `subBaseUrl` set but sub-domain block missing (federation deploy/undeploy failed 0/N)
+
+**Symptom (found on a live node).** On a node whose `subBaseUrl` was configured
+(e.g. `sub.example.com`), a hub "Deploy" («Довыпуск») / "Undeploy" («Отозвать»)
+returned **0/N** with a probe_resistance TLS abort
+(`ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`). Root cause was NOT probe_resistance
+itself: the node's on-disk Caddyfile was **missing the sub-domain block**
+(`<sub> { handle /sub/* … handle /api/federation/* … }`) even though
+`subBaseUrl` was present in `config.json`. With no dedicated block, the hub's
+`https://<sub-domain>/api/federation/*` request fell through to the main
+`forward_proxy` block, where `probe_resistance` kills the TLS handshake at the
+transport layer — before Caddy ever inspects the URL, headers or bearer token.
+
+**Why the Caddyfile drifted.** `POST /api/config` only rebuilt the Caddyfile
+when `subBaseUrl` (or `fakeSiteUrl`) **changed** relative to the previous value
+(`prev !== new`). If `config.json` and the Caddyfile ever fell out of sync — the
+value written by install/restore, or a prior rebuild that didn't complete —
+re-saving the **same** `subBaseUrl` was a no-op, so the stale Caddyfile could
+never self-correct. (Manually clearing → saving → re-entering the value forced
+`subChanged=true` and did produce the block, which confirmed the diagnosis.)
+
+**Fix — idempotent self-heal.** `POST /api/config` now additionally renders the
+**desired** Caddyfile and compares it byte-for-byte against what is on disk; on
+any drift it rewrites + gracefully reloads Caddy, in addition to the existing
+`subChanged || fakeChanged` guards. This also covers other Caddy-affecting
+fields that previously had no change-guard (`probeMode` / `probeSecret`,
+`domain`, `naivePort`, the panel block, etc.).
+
+**Safety / no-break guarantee.** For a healthy single-server install the desired
+Caddyfile already equals the on-disk one, so the comparison matches and **no
+rebuild and no reload happen** — behaviour is unchanged. `writeCaddyfileAtomic`
++ graceful `systemctl reload` are the same primitives already used elsewhere.
+Federation design, the hub/spoke topology and the hardened endpoints are
+untouched. No schema, config or API changes.
+
+### Notes
+
+- This does not change probe_resistance behaviour. The correct exposure for
+  federation remains the **sub-domain block** (no `forward_proxy`,
+  no `probe_resistance`); this fix simply guarantees that block actually lands
+  in the Caddyfile whenever `subBaseUrl` is configured.
+
+---
+
 ## [v1.11.0]
 
 ### Added — federation "Undeploy" (revoke a user across the whole mesh) — PR-3c

@@ -1933,14 +1933,44 @@ app.post('/api/config', requireAuth, (req, res) => {
   // logged and must never block the save (the config is already persisted).
   const subChanged  = (cfg.subBaseUrl  || '') !== prevSubBase;
   const fakeChanged = (cfg.fakeSiteUrl || '') !== prevFake;
-  if (subChanged || fakeChanged) {
+
+  // v1.11.1 (SELF-HEAL): the `prev !== new` guards above only rebuild the
+  // Caddyfile when a value CHANGES. If config.json and the on-disk Caddyfile
+  // ever drift out of sync — e.g. subBaseUrl was written by install/restore or
+  // a previous rebuild failed — re-saving the SAME value is a no-op, so the
+  // Caddyfile can stay permanently stale (observed in the field: subBaseUrl set
+  // in config.json but the sub-domain block, incl. /api/federation/*, missing
+  // from the Caddyfile → hub deploy/undeploy hit probe_resistance and failed
+  // 0/N). Fix: additionally compare the DESIRED Caddyfile against what is
+  // actually on disk and rebuild on any drift. This is idempotent for healthy
+  // single-server installs (desired === on-disk → no rebuild, no reload) and
+  // heals the drift for everyone else. Also covers other Caddy-affecting fields
+  // (probeMode/probeSecret, domain, naivePort, panel block, etc.) that had no
+  // dedicated change-guard at all.
+  let driftHeal = false;
+  let desiredCaddyfile = null;
+  try {
+    desiredCaddyfile = buildCaddyfile(cfg, getAllUsers());
+    const onDisk = fs.existsSync(resolvedCaddyFile)
+      ? fs.readFileSync(resolvedCaddyFile, 'utf8')
+      : '';
+    if (desiredCaddyfile !== onDisk) driftHeal = true;
+  } catch (e) {
+    console.warn('[CONFIG] Caddyfile drift check failed (non-fatal):', e && e.message);
+  }
+
+  if (subChanged || fakeChanged || driftHeal) {
     try {
-      writeCaddyfileAtomic(buildCaddyfile(cfg, getAllUsers()));
+      // Reuse the already-rendered desiredCaddyfile when available to avoid a
+      // second build; fall back to a fresh build if the drift check threw.
+      writeCaddyfileAtomic(desiredCaddyfile || buildCaddyfile(cfg, getAllUsers()));
       reloadCaddy();
       if (subChanged)
         console.log('[SUB] Caddy reloaded for subBaseUrl change ->', cfg.subBaseUrl || '(cleared)');
       if (fakeChanged)
         console.log('[FAKE] Caddy reloaded for fakeSiteUrl change ->', cfg.fakeSiteUrl || '(default fake site)');
+      if (driftHeal && !subChanged && !fakeChanged)
+        console.log('[HEAL] Caddyfile was stale vs config — rebuilt to re-sync (v1.11.1 self-heal)');
     } catch (e) {
       console.warn('[CONFIG] Caddy reload after config change failed:', e && e.message);
     }
