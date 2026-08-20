@@ -2179,6 +2179,14 @@ app.post('/api/federation/nodes/test', requireAuth, async (req, res) => {
     } catch (e) {
       const why = describeFetchError(e);
       console.warn(`[FED] node test "${n.name || n.url}" (${n.url}): ${why}`);
+      // v1.10.3: probe_resistance aborting our plain TLS probe means the node is
+      // UP and correctly hardened — NOT a failure. The real, authenticated
+      // federation request (with a bearer token + real payload) still works, so
+      // report it as reachable with an informational (not error) status.
+      if (isProbeResistance(e)) {
+        return { ...base, reachable: true, tokenOk: null, ok: true,
+                 probeResistance: true, error: why };
+      }
       return { ...base, reachable: false, tokenOk: false, ok: false, error: why };
     } finally {
       clearTimeout(timer);
@@ -4201,12 +4209,31 @@ const FED_FETCH_TIMEOUT_MS = 6000;
 // federation "довыпуск" errors uninformative ("fetch failed" with no hint why).
 // This turns a fetch/abort error into a short, human-actionable string so the
 // admin can tell a DNS miss from a refused port from a TLS/cert problem.
+// v1.10.3: A NaiveProxy node (caddy-forwardproxy-naive) runs `probe_resistance`,
+// which deliberately ABORTS the TLS handshake for any client that "looks like a
+// scanner" — i.e. a plain TLS client that is not a real authenticated Naive
+// client. Our own connectivity self-test is exactly such a plain client, so the
+// node answers `fatal internal_error` (ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR /
+// ECONNRESET on the raw ClientHello). That is NOT a fault: the node is alive and
+// the real, authenticated federation request still succeeds. We surface it as a
+// distinct, non-alarming signal so the self-test doesn't cry wolf.
+// The `.probeResistance` flag lets callers (nodes/test) treat it as "reachable".
+const PROBE_RESISTANCE_CODES = new Set([
+  'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR',
+  'ERR_SSL_TLSV1_ALERT_HANDSHAKE_FAILURE',
+  'ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE',
+]);
+
 function describeFetchError(err) {
   if (!err) return 'request failed';
   if (err.name === 'AbortError') return `timed out after ${FED_FETCH_TIMEOUT_MS}ms`;
   // fetch wraps the underlying network error on .cause (may itself nest).
   const cause = err.cause || err;
   const code  = cause && (cause.code || cause.errno);
+  // caddy-forwardproxy-naive probe_resistance closes the handshake — node is UP.
+  if (code && PROBE_RESISTANCE_CODES.has(code)) {
+    return `node reachable — TLS probe rejected by probe_resistance (${code}); this is expected for a NaiveProxy node, the authenticated federation request still works`;
+  }
   const map = {
     ENOTFOUND:      'DNS lookup failed (sub-domain does not resolve)',
     EAI_AGAIN:      'DNS lookup timed out',
@@ -4225,6 +4252,14 @@ function describeFetchError(err) {
   const msg = String((cause && cause.message) || err.message || 'fetch failed');
   // A bare "fetch failed" with no cause usually means TLS handshake / connect.
   return msg === 'fetch failed' ? 'could not connect (DNS/TLS/network)' : msg;
+}
+
+// v1.10.3: does this fetch error mean "node up, but probe_resistance rejected our
+// plain TLS probe"? Used by the connectivity self-test to avoid false alarms.
+function isProbeResistance(err) {
+  const cause = (err && err.cause) || err;
+  const code  = cause && (cause.code || cause.errno);
+  return !!(code && PROBE_RESISTANCE_CODES.has(code));
 }
 
 async function fetchFederatedUris(user, localUris = [], opts = {}) {

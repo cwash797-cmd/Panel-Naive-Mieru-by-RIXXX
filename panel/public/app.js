@@ -1751,10 +1751,18 @@ async function testFederationNodes() {
     }
     if (box) {
       box.innerHTML = results.map(r => {
+        // v1.10.3: three states — OK (green ✓), probe_resistance (blue ✓ = node
+        // is up & hardened, self-test can't fully verify but federation works),
+        // and error (red ✗).
         const good  = r.ok === true;
-        const color = good ? 'var(--ok, #16a34a)' : 'var(--danger, #dc2626)';
+        const probe = r.probeResistance === true;
+        const color = probe ? 'var(--info, #2563eb)'
+                    : good  ? 'var(--ok, #16a34a)'
+                            : 'var(--danger, #dc2626)';
         const icon  = good ? '✓' : '✗';
-        const label = good
+        const label = probe
+          ? (t('federation.testProbeResistance') || 'node reachable — probe_resistance active (this is normal for a NaiveProxy node; real federation still works)')
+          : good
           ? (t('federation.testOk') || 'reachable, token OK')
           : (r.error || 'error');
         const dis   = r.enabled === false ? ` <span class="badge badge-gray">${t('federation.disabled') || 'disabled'}</span>` : '';

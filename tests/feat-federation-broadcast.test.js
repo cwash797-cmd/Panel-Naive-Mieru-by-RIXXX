@@ -135,20 +135,41 @@ console.log('\n[2b] server: describeFetchError() classifies transport failures')
 ok(/function describeFetchError\(err\)/.test(serverSrc),
    'describeFetchError(err) exists');
 {
-  const t = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
-  const f = serverSrc.match(/function describeFetchError\(err\) \{[\s\S]*?\n\}/);
+  const t  = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
+  const pr = serverSrc.match(/const PROBE_RESISTANCE_CODES = new Set\(\[[\s\S]*?\]\);/);
+  const f  = serverSrc.match(/function describeFetchError\(err\) \{[\s\S]*?\n\}/);
+  const ip = serverSrc.match(/function isProbeResistance\(err\) \{[\s\S]*?\n\}/);
   ok(!!(t && f), 'describeFetchError extracted from source');
-  if (t && f) {
-    const sandbox = { String, Object };
+  ok(!!pr, 'v1.10.3: PROBE_RESISTANCE_CODES set exists');
+  ok(!!ip, 'v1.10.3: isProbeResistance() helper exists');
+  if (t && f && pr && ip) {
+    const sandbox = { String, Object, Set };
     vm.createContext(sandbox);
-    vm.runInContext(`const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${f[0]}\nthis.describeFetchError = describeFetchError;`, sandbox);
+    vm.runInContext(
+      `const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${pr[0]}\n${f[0]}\n${ip[0]}\n` +
+      `this.describeFetchError = describeFetchError; this.isProbeResistance = isProbeResistance;`,
+      sandbox);
     const d = sandbox.describeFetchError;
+    const p = sandbox.isProbeResistance;
     ok(/DNS/.test(d({ cause: { code: 'ENOTFOUND' } })), 'ENOTFOUND → DNS message');
     ok(/refused/.test(d({ cause: { code: 'ECONNREFUSED' } })), 'ECONNREFUSED → refused message');
     ok(/TLS/.test(d({ cause: { code: 'CERT_HAS_EXPIRED' } })), 'CERT_HAS_EXPIRED → TLS message');
     ok(/timed out/.test(d({ name: 'AbortError' })), 'AbortError → timed out message');
     ok(d({ message: 'fetch failed' }) !== 'fetch failed',
        'a bare "fetch failed" (no cause) is rephrased to something actionable');
+    // v1.10.3: a NaiveProxy node's probe_resistance aborts our plain TLS probe —
+    // this must be recognized as "node up", NOT a transport failure.
+    const tlsAlert = { cause: { code: 'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR' } };
+    ok(/probe_resistance/i.test(d(tlsAlert)),
+       'ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR → probe_resistance (node reachable) message');
+    ok(/reachable/i.test(d(tlsAlert)),
+       'probe_resistance message reassures the node is reachable');
+    ok(p(tlsAlert) === true,
+       'isProbeResistance() is TRUE for the TLS internal_error alert');
+    ok(p({ cause: { code: 'ENOTFOUND' } }) === false,
+       'isProbeResistance() is FALSE for a real DNS failure');
+    ok(p({ cause: { code: 'ECONNREFUSED' } }) === false,
+       'isProbeResistance() is FALSE for a refused connection');
   }
 }
 
@@ -167,6 +188,12 @@ ok(/app\.post\('\/api\/federation\/nodes\/test', requireAuth,/.test(serverSrc),
      '404 ⇒ classified as reachable-but-wrong-token / node-not-updated');
   ok(/reachable: false/.test(seg) && /describeFetchError\(e\)/.test(seg),
      'transport error ⇒ reachable:false with a human-readable cause');
+  // v1.10.3: probe_resistance (NaiveProxy node aborting our plain TLS probe) is
+  // NOT a failure — the node is up and the authenticated federation still works.
+  ok(/isProbeResistance\(e\)/.test(seg),
+     'v1.10.3: nodes/test detects probe_resistance instead of crying wolf');
+  ok(/probeResistance: true/.test(seg) && /reachable: true/.test(seg),
+     'v1.10.3: probe_resistance ⇒ reachable:true + probeResistance:true (non-alarming)');
 }
 
 // ── [3] admin route: POST /api/users/:id/federation/deploy ───────────────────
@@ -234,6 +261,11 @@ ok(/async function testFederationNodes\(\)/.test(appSrc),
    'testFederationNodes() exists');
 ok(/\/api\/federation\/nodes\/test/.test(appSrc),
    'testFederationNodes posts to the connectivity-test endpoint');
+// v1.10.3: the results renderer has a distinct (non-red) probe_resistance state.
+ok(/probeResistance/.test(appSrc),
+   'v1.10.3: testFederationNodes renders a distinct probe_resistance state');
+ok(/federation\.testProbeResistance/.test(appSrc),
+   'v1.10.3: probe_resistance state uses the testProbeResistance i18n label');
 
 for (const [lang, dict] of [['ru', ru], ['en', en]]) {
   const f = dict.federation || {};
@@ -259,6 +291,12 @@ for (const [lang, dict] of [['ru', ru], ['en', en]]) {
      `${lang}: federation.testConns label present`);
   ok(typeof f.testOk === 'string' && f.testOk.length > 0,
      `${lang}: federation.testOk label present`);
+  // v1.10.3: probe_resistance explanatory label (shown when a NaiveProxy node
+  // rejects the plain TLS probe but is actually up).
+  ok(typeof f.testProbeResistance === 'string' && f.testProbeResistance.length > 0,
+     `${lang}: federation.testProbeResistance label present`);
+  ok(/probe_resistance/i.test(f.testProbeResistance),
+     `${lang}: testProbeResistance mentions probe_resistance`);
   ok(typeof f.deployNoNodes === 'string' && f.deployNoNodes.length > 0,
      `${lang}: federation.deployNoNodes present`);
   ok(typeof f.deployNoEmail === 'string' && f.deployNoEmail.length > 0,
