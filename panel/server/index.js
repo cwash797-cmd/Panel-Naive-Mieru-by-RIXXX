@@ -4190,6 +4190,64 @@ app.post('/api/federation/provision', fedLimiter, (req, res) => {
   }
 });
 
+// ── v1.11.0 (PR-3c): POST /api/federation/deprovision ───────────────────────
+// The DELETE counterpart of /api/federation/provision. A hub calls this on a
+// node to remove ("отозвать") the SAME user from this node, keyed by email, so
+// a single click on the hub can revoke a user across the whole mesh.
+//
+// Hardened IDENTICALLY to /provision (this is a mutating federation endpoint, so
+// its guards are exactly as strict):
+//   • POST only.
+//   • Feature OFF when no cfg.federationToken ⇒ bare 404 (route looks absent).
+//   • Bearer token required, constant-time compare (safeTokenEqual). ANY failure
+//     ⇒ the SAME bare 404 — never 401/403, never a hint.
+//   • Rate-limited by fedLimiter (120/min) + the global apiLimiter.
+//
+// Idempotent delete-by-email (so re-clicking "undeploy" is always safe):
+//   • email is REQUIRED (it's the cross-server key) → 400 on missing/invalid.
+//   • If a user with that email EXISTS on this node → DELETE it locally and
+//     rebuild the node's proxy configs.  → { ok:true, action:'deleted' }.
+//   • If NO such user exists → this is a NO-OP success (the desired end state —
+//     "user absent on this node" — already holds).  → { ok:true, action:'absent' }.
+//
+// SAFETY: this endpoint ONLY ever deletes the single row whose email matches the
+// hub's request. It can never touch a different user, and — like /provision — it
+// only does anything at all when the operator has explicitly enabled federation
+// (set a node token) AND a hub presents that exact token. A single-server install
+// (no token) returns 404 and nothing is ever deleted.
+app.post('/api/federation/deprovision', fedLimiter, (req, res) => {
+  const notFound = () => res.status(404).type('text/plain').send('Not found');
+
+  // Feature off (no node token) ⇒ behave as if the route is absent.
+  const nodeToken = String(cfg.federationToken || '').trim();
+  if (!nodeToken) return notFound();
+
+  // Bearer token — a missing/malformed/mismatched header is a 404, not a 401.
+  const auth = String(req.headers['authorization'] || '');
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (!m) return notFound();
+  if (!safeTokenEqual(m[1].trim(), nodeToken)) return notFound();
+
+  // Authenticated peer. From here on we speak JSON (the caller is a trusted hub).
+  const email = String((req.body && req.body.email) || '').trim();
+  if (!email || !EMAIL_RE.test(email))
+    return res.status(400).json({ error: 'email is required and must be valid (it is the federation key)' });
+
+  try {
+    const existing = getUserByEmail(email);
+    if (!existing) {
+      // Desired end state already holds — report success, do nothing.
+      return res.json({ ok: true, action: 'absent' });
+    }
+    deleteUser(existing.id);
+    applyAllConfigsAsync();
+    return res.json({ ok: true, action: 'deleted', username: existing.username || null });
+  } catch (e) {
+    console.warn('[FED] deprovision failed:', e && e.message);
+    return res.status(500).json({ error: 'deprovision failed on node' });
+  }
+});
+
 // v1.9.5: pull configs for THIS user from every enabled federation peer NODE
 // and return the flat, de-duplicated URI list to splice into the subscription.
 //
@@ -4457,6 +4515,66 @@ async function broadcastProvision(user) {
   return { email, results };
 }
 
+// ── v1.11.0 (PR-3c): broadcastDeprovision(email) ────────────────────────────
+// Hub-side counterpart of the node /api/federation/deprovision endpoint. Asks
+// every enabled federation peer to REMOVE the user with this email, so one click
+// on the hub "отзывает" (revokes) the user across the whole mesh.
+//
+// Same safety guarantees as broadcastProvision — a broadcast can NEVER throw,
+// hang, or leave the hub in a bad state:
+//   • No email ⇒ nothing to broadcast (email is the only cross-server key).
+//   • No enabled nodes ⇒ empty result (byte-identical to pre-federation).
+//   • Each peer is POSTed in PARALLEL with a hard per-node timeout (AbortController).
+//   • A slow/dead/erroring/non-200/non-JSON peer is reported as { ok:false, ... }
+//     — it never aborts the other peers and never throws.
+//   • A node that already lacks the user reports { ok:true, action:'absent' } —
+//     idempotent, exactly like re-running a delete.
+// Returns a per-node result array so the UI can show a summary:
+//   [{ id, name, url, ok, action?('deleted'|'absent'), username?, error? }, ...]
+async function broadcastDeprovision(email) {
+  const key = String(email || '').trim();
+  if (!key) return { email: null, results: [], skipped: 'no-email' };
+
+  const nodes  = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length) return { email: key, results: [] };
+
+  const results = await Promise.all(active.map(async (n) => {
+    const base = { id: n.id, name: n.name || n.url, url: n.url };
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FED_FETCH_TIMEOUT_MS);
+    try {
+      const r = await fetch(`${String(n.url).replace(/\/+$/, '')}/api/federation/deprovision`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json',
+                   'Authorization': `Bearer ${n.token}` },
+        body:    JSON.stringify({ email: key }),
+        signal:  ctrl.signal,
+      });
+      if (!r.ok) {
+        // 404 = feature off / wrong token / old node (no deprovision endpoint).
+        return { ...base, ok: false,
+                 error: r.status === 404 ? 'node unreachable or federation write disabled (or node too old to support revoke)'
+                                         : `node returned HTTP ${r.status}` };
+      }
+      const data = await r.json().catch(() => null);
+      if (!data || data.ok !== true)
+        return { ...base, ok: false, error: (data && data.error) || 'invalid response from node' };
+      return { ...base, ok: true, action: data.action || 'ok',
+               username: data.username || null };
+    } catch (e) {
+      const why = describeFetchError(e);
+      console.warn(`[FED] deprovision → node "${n.name || n.url}" (${n.url}) failed: ${why}`,
+                   e && e.cause ? `[cause: ${e.cause.code || e.cause.message || e.cause}]` : '');
+      return { ...base, ok: false, error: why };
+    } finally {
+      clearTimeout(timer);
+    }
+  }));
+
+  return { email: key, results };
+}
+
 app.get('/sub/:token', subLimiter, async (req, res) => {
   const user = getUserBySubToken(req.params.token);
   if (!user) return res.status(404).type('text/plain').send('Not found');
@@ -4561,6 +4679,51 @@ app.post('/api/users/:id/federation/deploy', requireAuth, async (req, res) => {
     return res.json({ ok: true, email, results });
   } catch (e) {
     console.error('[FED] deploy failed:', e && e.message);
+    return res.status(500).json({ error: 'Broadcast failed' });
+  }
+});
+
+// ── v1.11.0 (PR-3c): POST /api/users/:id/federation/undeploy ────────────────
+// Admin-only "отзыв" — broadcast a REVOKE of this user to every enabled
+// federation node (delete-by-email). Idempotent: re-clicking is always safe, and
+// a node that already lacks the user reports action:'absent'.
+//
+// This is the DELETE-propagation counterpart of /deploy. It is a SEPARATE,
+// explicit action — the local DELETE /api/users/:id is intentionally left
+// unchanged so that removing a user on the hub NEVER silently reaches out to the
+// mesh. The operator revokes across nodes only when they explicitly ask to.
+//
+//   • 404 if the user doesn't exist locally AND no fallback email is supplied.
+//     (v1.11.0: if the local user was already deleted, the caller may pass
+//      { email } in the body to still purge that email from the nodes.)
+//   • 400 if there is no usable email (email is the only cross-server key).
+//   • 200 with { ok:true, email, results:[...] } otherwise. `results` reports
+//     each node individually — a dead/old/wrong-token node is { ok:false, error }
+//     and never fails the whole request (partial success is a valid outcome).
+app.post('/api/users/:id/federation/undeploy', requireAuth, async (req, res) => {
+  const user = getUserById(req.params.id);
+  // Allow an explicit email fallback so a user already removed locally can still
+  // be purged from the nodes (the id lookup then legitimately misses).
+  const bodyEmail = (req.body && req.body.email && String(req.body.email).trim()) || '';
+  const email = user && user.email && String(user.email).trim()
+    ? String(user.email).trim()
+    : bodyEmail;
+
+  if (!user && !bodyEmail)
+    return res.status(404).json({ error: 'User not found' });
+  if (!email)
+    return res.status(400).json({ error: 'This user has no email. Federation links users by email — nothing to revoke.' });
+
+  const nodes  = Array.isArray(cfg.federationNodes) ? cfg.federationNodes : [];
+  const active = nodes.filter(n => n && n.enabled !== false && n.url && n.token);
+  if (!active.length)
+    return res.status(400).json({ error: 'No enabled federation nodes are configured.' });
+
+  try {
+    const { results } = await broadcastDeprovision(email);
+    return res.json({ ok: true, email, results });
+  } catch (e) {
+    console.error('[FED] undeploy failed:', e && e.message);
     return res.status(500).json({ error: 'Broadcast failed' });
   }
 });

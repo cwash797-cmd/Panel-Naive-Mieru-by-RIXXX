@@ -7,6 +7,56 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.0]
+
+### Added — federation "Undeploy" (revoke a user across the whole mesh) — PR-3c
+
+The hub-and-spoke federation now supports **delete propagation**: one click
+revokes a user on every enabled peer node, mirroring the v1.10.0 "Deploy"
+(«Довыпуск») broadcast. Expiry / quota / protocol propagation was already
+handled by re-running Deploy (the provision payload carries `expiry`, `quotaMB`
+and `protocols`), so this release completes PR-3c with the missing revoke path.
+
+**Node side** — new `POST /api/federation/deprovision`, the DELETE counterpart
+of `/provision`, hardened **identically** (POST-only, feature-off ⇒ bare 404,
+bearer token via constant-time `safeTokenEqual` ⇒ 404 on any mismatch,
+`fedLimiter` rate limit). Idempotent delete-by-email:
+- email exists on the node ⇒ delete ONLY that row + rebuild configs ⇒ `action:'deleted'`
+- email absent ⇒ no-op success ⇒ `action:'absent'`
+
+It can only ever delete the single row whose email matches the hub's request, and
+only when the operator has explicitly enabled federation (set a node token).
+
+**Hub side** — new `broadcastDeprovision(email)` (parallel POST to all enabled
+nodes, hard per-node timeout, never throws; a dead/old/wrong-token node is
+reported as `{ ok:false, error }`) and admin route
+`POST /api/users/:id/federation/undeploy`. The route accepts an optional body
+`{ email }` fallback so a user already deleted locally can still be purged from
+the peers.
+
+**UI** — an "Undeploy" / «Отозвать» button next to "Deploy" (same visibility gate:
+at least one enabled node **and** the user has an email), an explicit
+confirmation, and a per-node result summary. New i18n keys
+`federation.undeploy / undeployConfirm / undeployOk / undeployPartial` (ru + en,
+double-brace interpolation).
+
+### Safety — single-server installs & local delete are byte-identical
+
+- Federation disabled (no node token) ⇒ `/deprovision` returns 404 and nothing
+  is ever deleted.
+- **The local `DELETE /api/users/:id` is deliberately UNCHANGED** — deleting a
+  user on the hub never silently cascades to the mesh. Revocation is a separate,
+  explicit action. (Asserted by a dedicated test.)
+- Caddy already exposes the whole `/api/federation/*` prefix (v1.10.1), so the
+  new endpoint is reachable on the sub-domain with no Caddyfile change.
+
+Tests: `feat-federation-broadcast` → **155 assertions** (deprovision security
+contract, `broadcastDeprovision` source + LIVE cases I–N against throwaway node
+servers, the undeploy route, the "no auto-cascade" safety assert, and the UI +
+i18n contracts). Full suite green.
+
+---
+
 ## [v1.10.3]
 
 ### Fixed — "Test connections" cried wolf on a healthy NaiveProxy node
