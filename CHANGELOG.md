@@ -7,6 +7,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.10.3]
+
+### Fixed — "Test connections" cried wolf on a healthy NaiveProxy node
+
+The v1.10.2 connectivity self-test («Проверить связь») reported
+`🇺🇸: network error ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR` in red, even though the
+node was fully working (subscriptions, provision and the real federation pull all
+succeeded). **Root cause:** a federation node runs
+`caddy-forwardproxy-naive` with `probe_resistance`, which **deliberately aborts
+the TLS handshake for any client that looks like a scanner** — i.e. a plain TLS
+client that is not an authenticated NaiveProxy client. Our diagnostic probe is
+exactly such a plain client, so the node answered `fatal internal_error` on the
+raw ClientHello. This is **expected hardening, not a fault**: the authenticated
+federation request (bearer token + real payload) still connects normally.
+
+- `describeFetchError()` now recognizes the probe-resistance TLS alerts
+  (`ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`, `…_HANDSHAKE_FAILURE`,
+  `ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE`) and returns a reassuring
+  "node reachable — TLS probe rejected by probe_resistance …" message instead of
+  a scary "network error".
+- New `isProbeResistance(err)` helper; `POST /api/federation/nodes/test` now
+  returns `{ reachable:true, probeResistance:true, ok:true }` for that case
+  rather than `reachable:false` — so a hardened, healthy node shows as **reachable
+  (blue ✓)**, not a red ✗.
+- Frontend renders a distinct, non-alarming blue state with the new
+  `federation.testProbeResistance` label (ru + en).
+
+**Nothing else changed** — the federation transport, endpoints and single-server
+behavior are untouched. This is purely a diagnostics-accuracy fix so the
+self-test stops raising a false alarm on a correctly hardened node.
+
+Tests: `feat-federation-broadcast` → **105 assertions** (probe-resistance
+classification in `describeFetchError`/`isProbeResistance`, the `nodes/test`
+branch, and the new i18n/UI label). Full suite green.
+
+---
+
 ## [v1.10.2]
 
 ### Fixed — broadcast toast showed literal `{ok}/{total}` (i18n interpolation)

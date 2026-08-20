@@ -447,6 +447,7 @@
     "testConns": "Test connections",
     "testConnsHint": "Checks each peer for DNS / TLS / token problems without changing anything.",
     "testConnsRunning": "Testing…",
-    "testOk": "reachable, token OK"
+    "testOk": "reachable, token OK",
+    "testProbeResistance": "node reachable — probe_resistance active (this is normal for a NaiveProxy node; real federation still works)"
   }
 }
