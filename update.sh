@@ -726,7 +726,14 @@ if (fs.existsSync(TEMPLATE_JS)) {
     panelBasicAuthHash: cfg.panelBasicAuthHash || '',
     webBasePath:        cfg.webBasePath        || '',
     panelStubPage:      cfg.panelStubPage      || '/var/www/panel-stub/index.html',
-    panelPort:          cfg.panelPort          || 3000
+    panelPort:          cfg.panelPort          || 3000,
+    // v1.11.2 FIX: pass subBaseUrl so caddyTemplate.renderSubBlock() emits the
+    // subscription sub-domain block ( handle /sub/* + handle /api/federation/* ).
+    // Without it, update.sh / --repair rebuilt the Caddyfile WITHOUT the sub host
+    // even when config.json had subBaseUrl set → the sub domain had no TLS cert
+    // and /sub returned a TLS internal error until the panel next rebuilt at
+    // runtime. buildCaddyfile() in index.js already passed this; update.sh didn't.
+    subBaseUrl:         cfg.subBaseUrl          || ''
   }, naiveUsers);
 } else {
   // Fallback (template not available): emit correct Bug 83 syntax directly
@@ -760,6 +767,23 @@ if (fs.existsSync(TEMPLATE_JS)) {
         '\n\n  redir /' + wbp + ' /' + wbp + '/ 301' +
         '\n\n  handle_path /' + wbp + '/* {\n' + ba + '    reverse_proxy 127.0.0.1:' + pPort +
         '\n  }\n\n  handle {\n    root * ' + stubDir + '\n    file_server\n  }\n}\n';
+    }
+  }
+  // v1.11.2 FIX: subscription sub-domain block (inline fallback — mirrors
+  // caddyTemplate.renderSubBlock + the index.js inline fallback). Emitted only
+  // when subBaseUrl is configured. Without this, a --repair that fell back to
+  // the inline path (caddyTemplate.js missing) would drop the sub host, exactly
+  // like the missing tpl.render({subBaseUrl}) above → /sub TLS internal error.
+  let subBlock = '';
+  {
+    const subRaw  = String(cfg.subBaseUrl || '').trim();
+    const subHost = subRaw ? subRaw.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim() : '';
+    if (subHost) {
+      const pPort = parseInt(cfg.panelPort, 10) || 3000;
+      subBlock = '\n\n' + subHost + ' {\n  tls ' + (cfg.adminEmail || '') +
+        '\n  handle /sub/* {\n    reverse_proxy 127.0.0.1:' + pPort + '\n  }' +
+        '\n  handle /api/federation/* {\n    reverse_proxy 127.0.0.1:' + pPort + '\n  }' +
+        '\n  handle {\n    respond "Not found" 404\n  }\n}\n';
     }
   }
   content = [
@@ -808,7 +832,7 @@ if (fs.existsSync(TEMPLATE_JS)) {
     '    root ' + (cfg.fakeSiteDir || FAKE_SITE),
     '  }',
     '}'
-  ].join('\n') + panelBlock;
+  ].join('\n') + panelBlock + subBlock;
 }
 
 const tmp = CADDY_FILE + '.new';
