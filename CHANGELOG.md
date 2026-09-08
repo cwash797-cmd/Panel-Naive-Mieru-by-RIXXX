@@ -7,6 +7,43 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.2]
+
+### Fixed — `update.sh` dropped the subscription sub-domain block → `/sub` TLS internal error after update (subscriber report)
+
+**Symptom.** After installing / updating a panel that has a subscription
+sub-domain configured (`subBaseUrl`, e.g. `sub.example.com`), the subscription
+links returned a **TLS internal error**. The sub host had no TLS certificate
+because its Caddy virtual host was never written.
+
+**Root cause.** `update.sh`'s `rebuild_caddyfile_direct()` rebuilds the Caddyfile
+by calling `caddyTemplate.render({...})`, but the argument object **omitted
+`subBaseUrl`**. `renderSubBlock()` therefore saw `undefined` and emitted nothing,
+so the rebuilt Caddyfile had **no sub-domain block** (`handle /sub/*` +
+`handle /api/federation/*`) even though `config.json` had `subBaseUrl` set. The
+inline fallback path (used when `caddyTemplate.js` isn't on disk) was missing the
+sub-block entirely, too. `index.js`'s `buildCaddyfile()` passed `subBaseUrl`
+correctly — only the update/`--repair` path was affected, which is why it only
+bit on update and healed itself once the panel rebuilt at runtime (and, since
+v1.11.1, on the next config save via self-heal).
+
+**Fix.**
+- `update.sh` `tpl.render({...})` now passes `subBaseUrl: cfg.subBaseUrl || ''`.
+- `update.sh` inline fallback now builds and appends a `subBlock` mirroring
+  `caddyTemplate.renderSubBlock()` (`/sub/*` + `/api/federation/*` + 404 catch).
+
+**Safety / no-break guarantee.** When `subBaseUrl` is empty (single-server
+installs), both paths emit **no** sub-block — byte-identical output to before, so
+those installs are unaffected. The main `forward_proxy` (Naive) block is
+untouched in every case. No schema / config / API changes.
+
+**Tests:** new `tests/bug-update-sub-block.test.js` (11 assertions) — static
+(update.sh passes subBaseUrl in both paths) + functional (shared template emits
+the sub host iff subBaseUrl is set, and the forward_proxy block is always
+present).
+
+---
+
 ## [v1.11.1]
 
 ### Fixed — Caddyfile self-heal: `subBaseUrl` set but sub-domain block missing (federation deploy/undeploy failed 0/N)
