@@ -52,7 +52,9 @@ const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
                // links into the sing-box JSON, so its dependency chain
                // (normalizeBonusLinks → enabledBonusUrls → bonusUrlToSingboxOutbound)
                // must be present in the sandbox too.
-               'normalizeBonusLinks', 'enabledBonusUrls', 'bonusUrlToSingboxOutbound',
+               'normalizeBonusLinks', 'enabledBonusUrls',
+               // v1.11.3 (issue #106): bonusUrlToSingboxOutbound delegates to these.
+               'parseXhttpExtra', 'buildV2rayTransport', 'bonusUrlToSingboxOutbound',
                // v1.9.4: buildUserUris/buildSingboxConfig now label configs via
                // applyServerFlag() (reads cfg.serverFlag). Must be in the sandbox.
                'applyServerFlag',
@@ -73,6 +75,8 @@ const sandbox = {
   Date,
   String,
   URL,          // v1.9.2: bonusUrlToSingboxOutbound() parses URIs via new URL()
+  URLSearchParams, // v1.11.3: buildV2rayTransport reads q.get()
+  decodeURIComponent, // v1.11.3
   JSON,         // v1.9.2: bonusUrlToSingboxOutbound() decodes vmess base64 JSON
   crypto: require('crypto'),
   // parseUserRow: the real one just JSON-parses protocols.

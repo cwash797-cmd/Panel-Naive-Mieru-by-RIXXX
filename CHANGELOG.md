@@ -7,6 +7,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.3]
+
+### Fixed — bonus `vless://` (and trojan/vmess) with `type=xhttp` was silently downgraded to TCP in the sing-box config (issue #106)
+
+**Problem.** A bonus `vless://` link with `type=xhttp` (or `splithttp`) works on
+direct import into Karing, but not through the panel's sing-box subscription.
+`bonusUrlToSingboxOutbound()` only translated the `ws` and `grpc` transports; for
+`xhttp` it produced an outbound with **no `transport` block**, so sing-box/Karing
+treated the connection as plain **TCP** — the xhttp server rejects it and the
+bonus node silently fails. Unknown transports were likewise silently downgraded
+to TCP instead of being rejected.
+
+**Fix.** A shared `buildV2rayTransport()` helper now translates
+`ws` / `grpc` / `httpupgrade` / `http` **and `xhttp`** (with `splithttp`
+normalized to `xhttp`) for `vless://` and `trojan://` share-links, and the
+equivalent JSON `net` values for `vmess://`. For xhttp it carries `mode`, `path`,
+`host`, and decodes the `extra` parameter (URL-encoded **or** base64url JSON),
+folding recognized keys — **including `xmux`** — into the sing-box transport.
+
+Crucially, an **unknown transport is now refused** (the whole outbound is
+dropped, i.e. the bonus link is skipped) rather than being silently emitted as a
+broken TCP outbound. A bad bonus link still never breaks the rest of the config.
+
+**Safety / no-break guarantee.** `tcp` / `raw` / empty transports emit **no
+`transport` key** — byte-identical to before, so existing ws/grpc/tcp bonus
+links and all standard Naive/Mieru/Hy2 outbounds are unchanged.
+
+**Tests:** new `tests/bug-bonus-xhttp.test.js` (21 assertions) — xhttp transport
+built for vless/trojan/vmess, splithttp→xhttp, `extra`/`xmux` decoded from JSON
+and base64url, ws/grpc/tcp unchanged, and unknown transports refused (not
+TCP-downgraded).
+
+---
+
 ## [v1.11.2]
 
 ### Fixed — `update.sh` dropped the subscription sub-domain block → `/sub` TLS internal error after update (subscriber report)

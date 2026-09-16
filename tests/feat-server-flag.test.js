@@ -38,7 +38,7 @@ function extractFn(src, name) {
 
 function mkSandbox(flag) {
   const sb = {
-    encodeURIComponent, parseInt, parseFloat, Number, Math, Buffer, isNaN, Array, Date, String, URL, JSON,
+    encodeURIComponent, decodeURIComponent, parseInt, parseFloat, Number, Math, Buffer, isNaN, Array, Date, String, URL, URLSearchParams, JSON,
     parseUserRow(u) { return { ...u, protocols: typeof u.protocols === 'string' ? JSON.parse(u.protocols) : (u.protocols || []) }; },
     pickMieruPort(r, s) { return s; },
     cfg: { domain: 'sv.example.com', serverIp: '1.2.3.4', naivePort: 443,
@@ -47,7 +47,8 @@ function mkSandbox(flag) {
   };
   vm.createContext(sb);
   for (const n of ['applyServerFlag','buildMierusLink','buildHy2Link','buildShadowrocketHttpsLink',
-                   'normalizeBonusLinks','enabledBonusUrls','bonusUrlToSingboxOutbound',
+                   'normalizeBonusLinks','enabledBonusUrls',
+                   'parseXhttpExtra','buildV2rayTransport','bonusUrlToSingboxOutbound',
                    'buildProxyOutbounds','buildUserUris','buildSingboxConfig'])
     vm.runInContext(extractFn(serverSrc, n), sb);
   return sb;

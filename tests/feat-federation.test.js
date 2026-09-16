@@ -215,12 +215,15 @@ function extractFetchFederatedOutbounds() {
   const t  = serverSrc.match(/const FED_FETCH_TIMEOUT_MS = (\d+);/);
   const fo = serverSrc.match(/async function fetchFederatedOutbounds\(user, existingTags = new Set\(\), opts = \{\}\) \{[\s\S]*?\n\}/);
   const tr = serverSrc.match(/function bonusUrlToSingboxOutbound\(rawUrl, tag\) \{[\s\S]*?\n\}/);
-  if (!t || !fo || !tr) return null;
+  // v1.11.3 (issue #106): bonusUrlToSingboxOutbound now delegates to these helpers.
+  const px = serverSrc.match(/function parseXhttpExtra\(rawExtra\) \{[\s\S]*?\n\}/);
+  const bt = serverSrc.match(/function buildV2rayTransport\(rawType, q\) \{[\s\S]*?\n\}/);
+  if (!t || !fo || !tr || !px || !bt) return null;
   const sandbox = { cfg: {}, fetch, AbortController, setTimeout, clearTimeout, console,
-                    Promise, Set, Array, String, JSON, Object, Buffer, URL, parseInt, decodeURIComponent };
+                    Promise, Set, Array, String, JSON, Object, Buffer, URL, URLSearchParams, parseInt, decodeURIComponent };
   vm.createContext(sandbox);
   vm.runInContext(
-    `const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${tr[0]}\n${fo[0]}\n` +
+    `const FED_FETCH_TIMEOUT_MS = ${t[1]};\n${px[0]}\n${bt[0]}\n${tr[0]}\n${fo[0]}\n` +
     `this.fetchFederatedOutbounds = fetchFederatedOutbounds;`, sandbox);
   return { fn: sandbox.fetchFederatedOutbounds, sandbox };
 }

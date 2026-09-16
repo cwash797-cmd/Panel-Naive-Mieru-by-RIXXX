@@ -42,6 +42,11 @@ ok(!!_famMatch, 'SINGBOX_FAMILY_UA present in server source');
 const SINGBOX_FAMILY_UA = _famMatch ? eval(_famMatch[1]) : [];
 
 const detectSubClient          = extract('detectSubClient');
+// v1.11.3 (issue #106): bonusUrlToSingboxOutbound now delegates transport
+// translation to buildV2rayTransport() / parseXhttpExtra(); extract & bind those
+// helpers so the eval'd function can call them.
+const parseXhttpExtra          = extract('parseXhttpExtra');
+const buildV2rayTransport      = extract('buildV2rayTransport');
 const bonusUrlToSingboxOutbound = extract('bonusUrlToSingboxOutbound');
 
 // Helper to fake an Express-ish request.
