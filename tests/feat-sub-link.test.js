@@ -54,7 +54,7 @@ const NAMES = ['buildMierusLink', 'buildHy2Link', 'buildNaiveLink',
                // must be present in the sandbox too.
                'normalizeBonusLinks', 'enabledBonusUrls',
                // v1.11.3 (issue #106): bonusUrlToSingboxOutbound delegates to these.
-               'parseXhttpExtra', 'buildV2rayTransport', 'bonusUrlToSingboxOutbound',
+               'parseXhttpExtra', 'xmuxToSnake', 'buildV2rayTransport', 'bonusUrlToSingboxOutbound',
                // v1.9.4: buildUserUris/buildSingboxConfig now label configs via
                // applyServerFlag() (reads cfg.serverFlag). Must be in the sandbox.
                'applyServerFlag',

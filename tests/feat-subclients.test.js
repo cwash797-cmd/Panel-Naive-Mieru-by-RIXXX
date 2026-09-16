@@ -46,6 +46,7 @@ const detectSubClient          = extract('detectSubClient');
 // translation to buildV2rayTransport() / parseXhttpExtra(); extract & bind those
 // helpers so the eval'd function can call them.
 const parseXhttpExtra          = extract('parseXhttpExtra');
+const xmuxToSnake              = extract('xmuxToSnake');
 const buildV2rayTransport      = extract('buildV2rayTransport');
 const bonusUrlToSingboxOutbound = extract('bonusUrlToSingboxOutbound');
 

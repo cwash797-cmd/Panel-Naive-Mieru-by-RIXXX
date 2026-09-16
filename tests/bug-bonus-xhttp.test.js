@@ -44,8 +44,8 @@ function extractFn(src, name) {
   return src.slice(start, i);
 }
 
-const NAMES = ['parseXhttpExtra', 'buildV2rayTransport', 'bonusUrlToSingboxOutbound'];
-const sandbox = { Buffer, URL, URLSearchParams, decodeURIComponent, JSON, String, console };
+const NAMES = ['parseXhttpExtra', 'xmuxToSnake', 'buildV2rayTransport', 'bonusUrlToSingboxOutbound'];
+const sandbox = { Buffer, URL, URLSearchParams, decodeURIComponent, JSON, String, Object, console };
 vm.createContext(sandbox);
 for (const n of NAMES) vm.runInContext(extractFn(serverSrc, n) + '\n', sandbox);
 
@@ -71,12 +71,19 @@ ok(spl && spl.transport && spl.transport.type === 'xhttp', 'splithttp → xhttp'
 console.log('\n[3] xhttp extra (JSON + base64url) with xmux');
 const extraJson = encodeURIComponent(JSON.stringify({ xmux: { maxConcurrency: 8, maxConnections: 0 }, xPaddingBytes: '100-1000' }));
 const oExtra = conv(`vless://u@h:443?security=tls&type=xhttp&extra=${extraJson}#b`);
-ok(oExtra && oExtra.transport && oExtra.transport.xmux && oExtra.transport.xmux.maxConcurrency === 8, 'xmux folded from URL-encoded JSON extra');
-ok(oExtra && oExtra.transport && oExtra.transport.xPaddingBytes === '100-1000', 'other extra knob preserved');
+// v1.11.3.1: sing-box / sing-box-lx require snake_case xmux + top-level keys.
+ok(oExtra && oExtra.transport && oExtra.transport.xmux && oExtra.transport.xmux.max_concurrency === 8, 'xmux.max_concurrency (snake_case) folded from URL-encoded JSON extra');
+ok(oExtra && oExtra.transport && oExtra.transport.xmux && oExtra.transport.xmux.maxConcurrency === undefined, 'camelCase xmux key is NOT emitted (sing-box would ignore it)');
+ok(oExtra && oExtra.transport && oExtra.transport.x_padding_bytes === '100-1000', 'top-level knob emitted as snake_case (x_padding_bytes)');
+ok(oExtra && oExtra.transport && oExtra.transport.xPaddingBytes === undefined, 'camelCase top-level key NOT emitted');
 // base64url form
 const b64 = Buffer.from(JSON.stringify({ xmux: { maxConcurrency: 4 } }), 'utf8').toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const oB64 = conv(`vless://u@h:443?security=tls&type=xhttp&extra=${b64}#b`);
-ok(oB64 && oB64.transport && oB64.transport.xmux && oB64.transport.xmux.maxConcurrency === 4, 'xmux folded from base64url JSON extra');
+ok(oB64 && oB64.transport && oB64.transport.xmux && oB64.transport.xmux.max_concurrency === 4, 'xmux folded from base64url JSON extra (snake_case)');
+// already-snake_case extra passes through unchanged
+const snakeExtra = encodeURIComponent(JSON.stringify({ xmux: { max_concurrency: '4-8', h_keep_alive_period: 45 } }));
+const oSnake = conv(`vless://u@h:443?security=tls&type=xhttp&extra=${snakeExtra}#b`);
+ok(oSnake && oSnake.transport.xmux && oSnake.transport.xmux.max_concurrency === '4-8' && oSnake.transport.xmux.h_keep_alive_period === 45, 'already-snake_case xmux keys pass through unchanged');
 
 // ── [4] ws / grpc still work (no regression) ─────────────────────────────────
 console.log('\n[4] ws/grpc unchanged');
