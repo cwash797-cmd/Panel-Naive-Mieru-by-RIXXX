@@ -3652,6 +3652,82 @@ function enabledBonusUrls(user) {
 // Supported: vless:// vmess:// trojan:// ss:// (SIP002) hysteria2://|hy2://
 // The admin owns correctness of the link; we only translate structure, we do
 // not validate that the remote actually works.
+//
+// ── v1.11.3 (issue #106): shared V2Ray-transport translator ───────────────────
+// Converts the `type=` query params of a vless/trojan share-link into the
+// sing-box `transport` object. Handles ws / grpc / httpupgrade / http (h2) and
+// — critically — xhttp / splithttp (Karing & sing-box forks; upstream sing-box
+// has no xhttp so plain http is the closest fallback there, but Karing consumes
+// the xhttp object natively).
+//
+// Returns:
+//   • a transport object for tcp-less transports,
+//   • null for plain "tcp"/"raw"/"" (no transport key needed),
+//   • the string 'UNSUPPORTED' for an unknown transport — the caller then
+//     REFUSES to emit the outbound instead of silently downgrading to TCP
+//     (a TCP outbound against an xhttp server just fails, per issue #106).
+//
+// `extra` (URL-encoded JSON or base64url JSON) is decoded and its supported
+// keys — including xmux — are folded into the xhttp transport.
+function parseXhttpExtra(rawExtra) {
+  const s = String(rawExtra || '').trim();
+  if (!s) return null;
+  // Try plain / URL-decoded JSON first, then base64url JSON.
+  const tryParse = (txt) => { try { const o = JSON.parse(txt); return (o && typeof o === 'object') ? o : null; } catch { return null; } };
+  let obj = tryParse(s);
+  if (!obj) { try { obj = tryParse(decodeURIComponent(s)); } catch { /* ignore */ } }
+  if (!obj) {
+    try {
+      const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+      obj = tryParse(Buffer.from(pad, 'base64').toString('utf8'));
+    } catch { /* ignore */ }
+  }
+  return obj;
+}
+
+function buildV2rayTransport(rawType, q) {
+  let type = String(rawType || 'tcp').toLowerCase();
+  // splithttp is the legacy name for xhttp — normalize (per xray share-link spec).
+  if (type === 'splithttp') type = 'xhttp';
+
+  if (type === 'tcp' || type === 'raw' || type === '' || type === 'none') return null;
+
+  if (type === 'ws') {
+    return { type: 'ws', path: q.get('path') || '/', headers: q.get('host') ? { Host: q.get('host') } : undefined };
+  }
+  if (type === 'grpc') {
+    return { type: 'grpc', service_name: q.get('serviceName') || q.get('servicename') || '' };
+  }
+  if (type === 'httpupgrade') {
+    return { type: 'httpupgrade', path: q.get('path') || '/', host: q.get('host') || undefined };
+  }
+  if (type === 'http' || type === 'h2') {
+    const host = q.get('host');
+    return { type: 'http', path: q.get('path') || '/', host: host ? host.split(',').map(h => h.trim()).filter(Boolean) : undefined };
+  }
+  if (type === 'xhttp') {
+    const t = { type: 'xhttp' };
+    const mode = (q.get('mode') || 'auto').toLowerCase();
+    t.mode = mode || 'auto';
+    if (q.get('path')) t.path = q.get('path');
+    if (q.get('host')) t.host = q.get('host');
+    // extra: URL-encoded / base64url JSON carrying xmux + other knobs.
+    const extra = parseXhttpExtra(q.get('extra'));
+    if (extra) {
+      if (extra.xmux && typeof extra.xmux === 'object') t.xmux = extra.xmux;
+      // Preserve other recognized xhttp knobs verbatim when present.
+      for (const k of ['scMaxEachPostBytes', 'scMinPostsIntervalMs', 'scMaxBufferedPosts',
+                       'scStreamUpServerSecs', 'xPaddingBytes', 'noGRPCHeader', 'downloadSettings']) {
+        if (extra[k] !== undefined) t[k] = extra[k];
+      }
+    }
+    return t;
+  }
+  // Unknown transport: signal the caller to REFUSE (never silent-downgrade to TCP).
+  return 'UNSUPPORTED';
+}
+
 function bonusUrlToSingboxOutbound(rawUrl, tag) {
   const url = String(rawUrl || '').trim();
   if (!url) return null;
@@ -3678,9 +3754,10 @@ function bonusUrlToSingboxOutbound(rawUrl, tag) {
           out.tls.reality = { enabled: true, public_key: q.get('pbk') || '', short_id: q.get('sid') || '' };
         }
       }
-      const type = (q.get('type') || 'tcp').toLowerCase();
-      if (type === 'ws')   out.transport = { type: 'ws',   path: q.get('path') || '/', headers: q.get('host') ? { Host: q.get('host') } : undefined };
-      if (type === 'grpc') out.transport = { type: 'grpc', service_name: q.get('serviceName') || '' };
+      // v1.11.3 (issue #106): translate ws/grpc/xhttp/splithttp/httpupgrade/http.
+      const tr = buildV2rayTransport(q.get('type'), q);
+      if (tr === 'UNSUPPORTED') return null;   // never silent-downgrade to TCP
+      if (tr) out.transport = tr;
       return out;
     }
 
@@ -3696,9 +3773,10 @@ function bonusUrlToSingboxOutbound(rawUrl, tag) {
         password: decodeURIComponent(u.username),
         tls: { enabled: true, server_name: q.get('sni') || q.get('host') || u.hostname }
       };
-      const type = (q.get('type') || 'tcp').toLowerCase();
-      if (type === 'ws')   out.transport = { type: 'ws',   path: q.get('path') || '/', headers: q.get('host') ? { Host: q.get('host') } : undefined };
-      if (type === 'grpc') out.transport = { type: 'grpc', service_name: q.get('serviceName') || '' };
+      // v1.11.3 (issue #106): translate ws/grpc/xhttp/splithttp/httpupgrade/http.
+      const tr = buildV2rayTransport(q.get('type'), q);
+      if (tr === 'UNSUPPORTED') return null;   // never silent-downgrade to TCP
+      if (tr) out.transport = tr;
       return out;
     }
 
@@ -3752,9 +3830,24 @@ function bonusUrlToSingboxOutbound(rawUrl, tag) {
       };
       if ((json.tls || '').toLowerCase() === 'tls')
         out.tls = { enabled: true, server_name: json.sni || json.host || json.add };
-      const net = (json.net || 'tcp').toLowerCase();
-      if (net === 'ws')   out.transport = { type: 'ws',   path: json.path || '/', headers: json.host ? { Host: json.host } : undefined };
-      if (net === 'grpc') out.transport = { type: 'grpc', service_name: json.path || '' };
+      // v1.11.3 (issue #106): VMess uses JSON fields (net/path/host) rather than
+      // query params. Handle ws/grpc/xhttp/splithttp/httpupgrade/http and refuse
+      // unknown transports instead of silently downgrading to TCP.
+      let net = (json.net || 'tcp').toLowerCase();
+      if (net === 'splithttp') net = 'xhttp';
+      if (net === 'ws')          out.transport = { type: 'ws',   path: json.path || '/', headers: json.host ? { Host: json.host } : undefined };
+      else if (net === 'grpc')   out.transport = { type: 'grpc', service_name: json.path || '' };
+      else if (net === 'httpupgrade') out.transport = { type: 'httpupgrade', path: json.path || '/', host: json.host || undefined };
+      else if (net === 'h2' || net === 'http') out.transport = { type: 'http', path: json.path || '/', host: json.host ? String(json.host).split(',').map(h => h.trim()).filter(Boolean) : undefined };
+      else if (net === 'xhttp') {
+        const t = { type: 'xhttp', mode: (json.mode || 'auto') };
+        if (json.path) t.path = json.path;
+        if (json.host) t.host = json.host;
+        const extra = parseXhttpExtra(json.extra);
+        if (extra && extra.xmux && typeof extra.xmux === 'object') t.xmux = extra.xmux;
+        out.transport = t;
+      }
+      else if (net !== 'tcp' && net !== 'raw' && net !== 'none' && net !== '') return null; // unknown → refuse
       return out;
     }
   } catch { /* malformed → skip */ }
