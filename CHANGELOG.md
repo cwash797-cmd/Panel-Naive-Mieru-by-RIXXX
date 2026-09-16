@@ -7,6 +7,40 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.4]
+
+### Fixed — xhttp `xmux` / knobs must be snake_case for sing-box (issue #106 follow-up)
+
+**Symptom.** After v1.11.3 a bonus VLESS-XHTTP node **pinged (48ms) but url-test
+failed** in Karing / RX-PRO, so it still couldn't carry traffic.
+
+**Root cause.** v1.11.3 correctly built the `xhttp` transport (type/mode/path/host),
+but folded the `extra` params — including the `xmux` sub-object — into the sing-box
+JSON **verbatim in camelCase** (`maxConcurrency`, `xPaddingBytes`, …), exactly as
+they arrive in an Xray share-link. But sing-box / **sing-box-lx** (the fork Karing
+& RX-PRO use for XHTTP) require **snake_case** keys (`max_concurrency`,
+`x_padding_bytes`, …) and **silently ignore** unknown camelCase keys — so the
+`xmux` pool and padding were dropped, breaking the connection while a plain ping
+still succeeded.
+
+**Fix.** The `extra`/`xmux` translation now maps camelCase → snake_case per the
+sing-box-lx reference (`docs-lx/lx-protocols-transports.md` §1.2/§1.5/§1.6/§1.7):
+- `xmux`: `max_concurrency`, `max_connections`, `c_max_reuse_times`,
+  `h_max_request_times`, `h_max_reusable_secs`, `h_keep_alive_period`.
+- top-level: `x_padding_bytes`, `no_grpc_header`, `sc_max_each_post_bytes`,
+  `sc_min_posts_interval_ms`, `sc_max_buffered_posts`, `sc_stream_up_server_secs`.
+Already-snake_case keys pass through unchanged (links authored against
+sing-box/mihomo keep working).
+
+**Safety.** Only affects xhttp bonus links. tcp/ws/grpc bonus links and all
+Naive/Mieru/Hy2 outbounds are unchanged.
+
+**Tests:** `tests/bug-bonus-xhttp.test.js` extended (24 assertions) — asserts
+snake_case xmux + top-level keys, camelCase keys are NOT emitted, and
+already-snake_case extras pass through.
+
+---
+
 ## [v1.11.3]
 
 ### Fixed — bonus `vless://` (and trojan/vmess) with `type=xhttp` was silently downgraded to TCP in the sing-box config (issue #106)

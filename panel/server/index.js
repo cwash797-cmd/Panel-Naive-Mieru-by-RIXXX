@@ -3686,6 +3686,22 @@ function parseXhttpExtra(rawExtra) {
   return obj;
 }
 
+// v1.11.3.1 (issue #106 follow-up): xmux keys → sing-box snake_case (docs-lx §1.7).
+// Xray share-links carry camelCase; sing-box/sing-box-lx silently ignore unknown
+// (camelCase) keys, so xmux was dropped and url-test failed. Map known keys,
+// pass any already-snake_case key through unchanged.
+function xmuxToSnake(xmux) {
+  if (!xmux || typeof xmux !== 'object') return undefined;
+  const MAP = {
+    maxConcurrency: 'max_concurrency', maxConnections: 'max_connections',
+    cMaxReuseTimes: 'c_max_reuse_times', hMaxRequestTimes: 'h_max_request_times',
+    hMaxReusableSecs: 'h_max_reusable_secs', hKeepAlivePeriod: 'h_keep_alive_period',
+  };
+  const out = {};
+  for (const [k, v] of Object.entries(xmux)) out[MAP[k] || k] = v;
+  return Object.keys(out).length ? out : undefined;
+}
+
 function buildV2rayTransport(rawType, q) {
   let type = String(rawType || 'tcp').toLowerCase();
   // splithttp is the legacy name for xhttp — normalize (per xray share-link spec).
@@ -3712,15 +3728,25 @@ function buildV2rayTransport(rawType, q) {
     t.mode = mode || 'auto';
     if (q.get('path')) t.path = q.get('path');
     if (q.get('host')) t.host = q.get('host');
-    // extra: URL-encoded / base64url JSON carrying xmux + other knobs.
+    // v1.11.3.1 (issue #106 follow-up): sing-box / sing-box-lx (the fork Karing
+    // & RX-PRO use for XHTTP) require **snake_case** transport + xmux keys — the
+    // Xray share-link `extra` carries camelCase, which sing-box silently ignored
+    // (xmux dropped → url-test failed even though the node pinged). Convert here.
     const extra = parseXhttpExtra(q.get('extra'));
     if (extra) {
-      if (extra.xmux && typeof extra.xmux === 'object') t.xmux = extra.xmux;
-      // Preserve other recognized xhttp knobs verbatim when present.
-      for (const k of ['scMaxEachPostBytes', 'scMinPostsIntervalMs', 'scMaxBufferedPosts',
-                       'scStreamUpServerSecs', 'xPaddingBytes', 'noGRPCHeader', 'downloadSettings']) {
-        if (extra[k] !== undefined) t[k] = extra[k];
+      // top-level xhttp knobs (camelCase → snake_case, per docs-lx §1.2/§1.5/§1.6)
+      const TOP_MAP = {
+        xPaddingBytes: 'x_padding_bytes', noGRPCHeader: 'no_grpc_header',
+        scMaxEachPostBytes: 'sc_max_each_post_bytes', scMinPostsIntervalMs: 'sc_min_posts_interval_ms',
+        scMaxBufferedPosts: 'sc_max_buffered_posts', scStreamUpServerSecs: 'sc_stream_up_server_secs',
+      };
+      for (const [camel, snake] of Object.entries(TOP_MAP)) {
+        if (extra[camel] !== undefined && t[snake] === undefined) t[snake] = extra[camel];
+        if (extra[snake] !== undefined) t[snake] = extra[snake]; // already snake in some links
       }
+      // xmux sub-object (camelCase → snake_case, per docs-lx §1.7)
+      const xmux = xmuxToSnake(extra.xmux);
+      if (xmux) t.xmux = xmux;
     }
     return t;
   }
@@ -3844,7 +3870,8 @@ function bonusUrlToSingboxOutbound(rawUrl, tag) {
         if (json.path) t.path = json.path;
         if (json.host) t.host = json.host;
         const extra = parseXhttpExtra(json.extra);
-        if (extra && extra.xmux && typeof extra.xmux === 'object') t.xmux = extra.xmux;
+        const xmux = extra && xmuxToSnake(extra.xmux);
+        if (xmux) t.xmux = xmux;
         out.transport = t;
       }
       else if (net !== 'tcp' && net !== 'raw' && net !== 'none' && net !== '') return null; // unknown → refuse
