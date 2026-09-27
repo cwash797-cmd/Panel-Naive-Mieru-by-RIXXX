@@ -2,7 +2,7 @@
 # ==============================================================================
 # Panel Naive + Mieru by RIXXX — install.sh  v1.2.6
 # Caddy-forwardproxy-naive (amd64-only) + Mieru (mita) + fake-site + probe-resistance
-# Supports: Ubuntu 20.04/22.04/24.04, Debian 11/12 | x86_64 only
+# Supports: Ubuntu 20.04/22.04/24.04/26.04, Debian 11/12/13 | x86_64 only
 # ==============================================================================
 set -euo pipefail
 
@@ -58,6 +58,7 @@ die()       { log_error "$*"; exit 1; }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 PANEL_DIR="/opt/panel-naive-mieru"
+INSTALL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PANEL_CONFIG="/etc/rixxx-panel/config.json"
 VERSION_FILE="/etc/rixxx-panel/version"
 BACKUP_DIR="/etc/rixxx-panel/backups"
@@ -80,7 +81,7 @@ NAIVE_CONFIG_DIR="/etc/naive"
 # ONE bump (edit VERSION, commit to main). The hardcoded value is a fallback
 # for when install.sh is run without the VERSION file next to it.
 _read_version_file() {
-  local d; d="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo '')"
+  local d="$INSTALL_SCRIPT_DIR"
   if [[ -n "$d" && -f "$d/VERSION" ]]; then head -n1 "$d/VERSION" | tr -d '[:space:]'
   elif [[ -f "$PWD/VERSION" ]]; then head -n1 "$PWD/VERSION" | tr -d '[:space:]'
   else echo ""; fi
@@ -174,12 +175,12 @@ check_os() {
   case "$ID" in
     ubuntu)
       case "$VERSION_ID" in
-        20.04|22.04|24.04) log_info "OS: Ubuntu $VERSION_ID ✓" ;;
+        20.04|22.04|24.04|26.04) log_info "OS: Ubuntu $VERSION_ID ✓" ;;
         *) die "$(t "Неподдерживаемая Ubuntu: $VERSION_ID" "Unsupported Ubuntu: $VERSION_ID")" ;;
       esac ;;
     debian)
       case "$VERSION_ID" in
-        11|12) log_info "OS: Debian $VERSION_ID ✓" ;;
+        11|12|13) log_info "OS: Debian $VERSION_ID ✓" ;;
         *) die "$(t "Неподдерживаемый Debian: $VERSION_ID" "Unsupported Debian: $VERSION_ID")" ;;
       esac ;;
     *) die "$(t "Неподдерживаемая ОС: $ID" "Unsupported OS: $ID")" ;;
@@ -986,7 +987,7 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 # byte volume (bytes_read/size = 0, and successful tunnels are not logged at
 # all). The only reliable source for Naive traffic is the kernel: systemd's
 # per-unit IP accounting (cgroup net counters). The panel reads
-# IPIngressBytes / IPEgressBytes from `systemctl show caddy-naive`.
+# IPIngressBytes / IPEgressBytes from the systemctl show caddy-naive output.
 IPAccounting=yes
 
 [Install]
@@ -1099,10 +1100,9 @@ setup_ufw() {
 install_panel() {
   log_step "$(t 'Установка веб-панели' 'Installing web panel')"
   mkdir -p "$PANEL_DIR"
-  # Locate the local panel/ source robustly: try the script's own directory,
-  # then the current working directory (covers `sudo bash install.sh` from the
-  # cloned repo even when BASH_SOURCE is relative).
-  local script_dir; script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  # The installer changes directories while extracting Caddy, so use the
+  # absolute script path captured before that change.
+  local script_dir="$INSTALL_SCRIPT_DIR"
   local src=""
   if [[ -n "$script_dir" && -d "$script_dir/panel" ]]; then
     src="$script_dir/panel"
@@ -1356,7 +1356,7 @@ start_services() {
     local _port_wait=0
     while [[ $_port_wait -lt 30 ]]; do
       ss -tlnp 2>/dev/null | grep -q ":${NAIVE_PORT} " && break
-      sleep 2; (( _port_wait++ ))
+      sleep 2; ((++_port_wait))
     done
     if ! ss -tlnp 2>/dev/null | grep -q ":${NAIVE_PORT} "; then
       log_warn "$(t "caddy-naive ещё не слушает :${NAIVE_PORT} после 60 с — ACME challenge может быть в процессе" \
@@ -1448,7 +1448,7 @@ smoke_test_configs() {
     -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASS\"}" 2>/dev/null) || true
 
   if echo "$login_res" | grep -q '"ok":true'; then
-    echo -e "  ${GREEN}✓${NC} smoke login OK"; (( pass++ ))
+    echo -e "  ${GREEN}✓${NC} smoke login OK"; ((++pass))
   else
     echo -e "  ${YELLOW}⚠${NC}  smoke login skipped (panel may still be starting)"
     rm -f "$cookie_file"
@@ -1465,9 +1465,9 @@ smoke_test_configs() {
   user_id=$(echo "$create_res" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).id||""));}catch(_){}})' 2>/dev/null || true)
 
   if [[ -n "$user_id" ]]; then
-    echo -e "  ${GREEN}✓${NC} smoke test user created (id: ${user_id:0:8}…)"; (( pass++ ))
+    echo -e "  ${GREEN}✓${NC} smoke test user created (id: ${user_id:0:8}…)"; ((++pass))
   else
-    echo -e "  ${RED}✗${NC} smoke test user creation failed"; (( fail++ ))
+    echo -e "  ${RED}✗${NC} smoke test user creation failed"; ((++fail))
     rm -f "$cookie_file"; return 0
   fi
 
@@ -1478,16 +1478,16 @@ smoke_test_configs() {
     2>/dev/null) || true
 
   if echo "$naive_cfg" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);process.exit("link" in d?0:1)})' 2>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} naive config link valid"; (( pass++ ))
+    echo -e "  ${GREEN}✓${NC} naive config link valid"; ((++pass))
     # Bug 5: verify transport field
     local naive_link; naive_link=$(echo "$naive_cfg" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).link||""));}catch(_){}})' 2>/dev/null || true)
     if echo "$naive_link" | grep -q "naive+https://"; then
-      echo -e "  ${GREEN}✓${NC} naive link uses HTTPS transport"; (( pass++ ))
+      echo -e "  ${GREEN}✓${NC} naive link uses HTTPS transport"; ((++pass))
     else
-      echo -e "  ${RED}✗${NC} naive link missing HTTPS transport"; (( fail++ ))
+      echo -e "  ${RED}✗${NC} naive link missing HTTPS transport"; ((++fail))
     fi
   else
-    echo -e "  ${RED}✗${NC} naive config invalid"; (( fail++ ))
+    echo -e "  ${RED}✗${NC} naive config invalid"; ((++fail))
   fi
 
   # Fetch mieru (sing-box) config
@@ -1510,9 +1510,9 @@ smoke_test_configs() {
       } catch (_) { process.exit(1); }
     });
   ' 2>/dev/null; then
-    echo -e "  ${GREEN}✓${NC} mieru config valid (transport + port fields)"; (( pass++ ))
+    echo -e "  ${GREEN}✓${NC} mieru config valid (transport + port fields)"; ((++pass))
   else
-    echo -e "  ${RED}✗${NC} mieru config validation failed"; (( fail++ ))
+    echo -e "  ${RED}✗${NC} mieru config validation failed"; ((++fail))
   fi
 
   # Cleanup test user
@@ -1533,9 +1533,9 @@ smoke_test() {
 
   chk() {
     if eval "$2" &>/dev/null; then
-      echo -e "  ${GREEN}✓${NC} $1"; (( pass++ ))
+      echo -e "  ${GREEN}✓${NC} $1"; ((++pass))
     else
-      echo -e "  ${RED}✗${NC} $1"; (( fail++ ))
+      echo -e "  ${RED}✗${NC} $1"; ((++fail))
     fi
   }
 
@@ -1564,7 +1564,7 @@ smoke_test() {
 
   if timedatectl status 2>/dev/null | grep -q "synchronized: yes"; then
     echo -e "  ${GREEN}✓${NC} $(t 'Время синхронизировано' 'Time synchronised')"
-    (( pass++ ))
+    ((++pass))
   else
     echo -e "  ${YELLOW}⚠${NC}  $(t 'Время НЕ синхронизировано — критично для Mieru!' \
                                     'Time NOT synchronised — critical for Mieru!')"

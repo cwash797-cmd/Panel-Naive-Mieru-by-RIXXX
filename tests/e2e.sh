@@ -24,12 +24,12 @@ fail_count=0
 warn_count=0
 
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; (( warn_count++ )); }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; ((++warn_count)); }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 log_step()  { echo -e "\n${CYAN}${BOLD}▶ $*${NC}"; }
 
-pass() { echo -e "  ${GREEN}✓${NC}  $1"; (( pass_count++ )); }
-fail() { echo -e "  ${RED}✗${NC}  $1"; (( fail_count++ )); }
+pass() { echo -e "  ${GREEN}✓${NC}  $1"; ((++pass_count)); }
+fail() { echo -e "  ${RED}✗${NC}  $1"; ((++fail_count)); }
 skip() { echo -e "  ${YELLOW}⊘${NC}  $1 (skipped)"; }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
