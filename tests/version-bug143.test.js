@@ -46,7 +46,9 @@ function makeReader(versionFile, bundledVersionPaths, cfg, fallback) {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ver143-'));
 const verFile = path.join(tmp, 'version');
-const bundled = path.join(tmp, 'VERSION');
+// Keep this name distinct from `version` even on case-insensitive filesystems
+// (e.g. the default macOS APFS setup), where `version` and `VERSION` alias.
+const bundled = path.join(tmp, 'bundled-VERSION');
 
 console.log('BUG-143 version single-source regression test');
 

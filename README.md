@@ -54,9 +54,26 @@
 git clone https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX.git
 cd Panel-Naive-Mieru-by-RIXXX
 
-# 2. Запустить установщик от root
+# 2. Запустить общий установщик от root
 sudo bash install.sh
 ```
+
+Перед этим шагом **только на Debian 11 или Ubuntu 20.04** выполните
+соответствующий bootstrapper:
+
+```bash
+sudo bash bootstrap-debian11.sh   # Debian 11
+sudo bash bootstrap-ubuntu20.sh   # Ubuntu 20.04
+```
+
+> Debian 11 завершил официальный период обновлений безопасности. Его
+> bootstrapper переключает APT на подписанный, но замороженный snapshot от
+> 2026-08-31. Оба bootstrapper'а включают сборку `better-sqlite3` из
+> исходников на VPS — её предсобранный Linux-бинарник требует более новую
+> glibc (`GLIBC_2.33`), чем есть в обеих ОС, а на Ubuntu 20.04 штатный
+> компилятор (g++ 9) вдобавок не умеет её собирать, поэтому ubuntu-bootstrapper
+> ещё и ставит и переключает систему на g++-10. Для новых установок
+> предпочтителен Debian 12 или Ubuntu 22.04+.
 
 Мастер установки запросит:
 - Язык (Русский / English) — **первый вопрос**
@@ -414,7 +431,7 @@ ufw status
 ## 📋 Стек технологий
 
 - **Установщик:** Bash (Ubuntu 20.04–24.04, Debian 11–12)
-- **Панель:** Node.js 20 LTS + Express + better-sqlite3 + WebSocket
+- **Панель:** Node.js 24 LTS + Express + better-sqlite3 + WebSocket
 - **Процесс-менеджер:** PM2
 - **NaiveProxy:** caddy-naive (Caddy + forward_proxy plugin)
 - **Mieru:** mita (управляется через `mita apply config`)

@@ -56,6 +56,7 @@ DB_PATH="/var/lib/rixxx-panel/db.sqlite"
 MITA_STATE_FILE="/var/lib/rixxx-panel/mita-state.json"
 
 REPO_URL="https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX"
+PM2_VERSION="7.0.4"
 # Bug 99: raw base for fetching single files (VERSION, update.sh) without git.
 REPO_RAW="https://raw.githubusercontent.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX/main"
 
@@ -1527,8 +1528,8 @@ update_mieru() {
 #     clear message and left a partial copy;
 #   - the version bump happened even on a partial run, so the next `-y` run saw
 #     "already up-to-date" and never re-copied the panel files.
-# Now: clone (or fall back to the local checkout), copy ALL panel files, run
-# npm install non-fatally, restart PM2, and verify a known sentinel landed.
+# Now: clone (or fall back to the local checkout), ensure native build tools,
+# copy ALL panel files, install dependencies, restart PM2, and verify a sentinel.
 update_panel() {
   log_step "Updating web panel"
   $DRY_RUN && { log_dry "Would pull latest panel from $REPO_URL"; return; }
@@ -1555,6 +1556,18 @@ update_panel() {
 
   # repo_root is the dir that CONTAINS panel/ (holds VERSION + deploy scripts).
   local repo_root; repo_root="$(dirname "$src")"
+
+  # better-sqlite3 is a native addon. Existing installs from before this update
+  # may not have a compiler toolchain, so prepare it before stopping the panel
+  # or switching Node.js. Fresh installs already get these packages in
+  # install_deps().
+  if ! command -v make >/dev/null 2>&1 || \
+     ! command -v g++ >/dev/null 2>&1 || \
+     ! command -v python3 >/dev/null 2>&1; then
+    log_step "Installing native module build prerequisites"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential python3
+  fi
 
   pm2 stop panel-naive-mieru 2>/dev/null || true
 
@@ -1586,10 +1599,61 @@ update_panel() {
     done
   done
 
-  # npm install must NOT be fatal — keep going even on a transient failure.
-  ( cd "$PANEL_DIR" && npm install --omit=dev --silent ) \
-    || ( cd "$PANEL_DIR" && npm install --production --silent ) \
-    || log_warn "npm install reported a problem — continuing (deps may already be present)"
+  # The panel's package.json now targets Node.js 24 LTS. Upgrade the runtime
+  # before npm ci so existing installations do not keep running an EOL Node 20.
+  if ! command -v node &>/dev/null || ! node --version | grep -qE '^v24\.'; then
+    log_step "Installing Node.js 24 LTS for the panel"
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+    apt-get update -qq
+    apt-get install -y --allow-downgrades nodejs
+    node --version | grep -qE '^v24\.' || die "Node.js 24 installation did not produce a v24 runtime"
+  fi
+  if ! command -v pm2 &>/dev/null || [[ "$(pm2 --version 2>/dev/null)" != "$PM2_VERSION" ]]; then
+    npm install -g "pm2@${PM2_VERSION}" --silent
+  fi
+
+  # Prefer the repository lockfile for reproducible installs; retain npm install
+  # as a compatibility path for older panel checkouts without package-lock.json.
+  if [[ -f "$PANEL_DIR/package-lock.json" ]]; then
+    local deps_backup="$PANEL_DIR/.node_modules.pre-npm-ci.$$"
+    if [[ -d "$PANEL_DIR/node_modules" ]]; then
+      mv "$PANEL_DIR/node_modules" "$deps_backup"
+    fi
+    if ( cd "$PANEL_DIR" && npm ci --omit=dev --silent ); then
+      rm -rf "$deps_backup"
+    else
+      rm -rf "$PANEL_DIR/node_modules"
+      if [[ -d "$deps_backup" ]]; then
+        mv "$deps_backup" "$PANEL_DIR/node_modules"
+      fi
+      # Node.js was upgraded above, so native addons from the restored tree may
+      # still target the old Node ABI. Rebuild SQLite before the panel restarts.
+      local sqlite_dir="$PANEL_DIR/node_modules/better-sqlite3"
+      if [[ -d "$sqlite_dir" ]]; then
+        if ( cd "$sqlite_dir" && npm run build-release --silent ); then
+          rm -f "$sqlite_dir/prebuilds/linux-x64.node"
+          node -e "require('$sqlite_dir')" \
+            || die "Restored better-sqlite3 cannot load under the installed Node.js runtime"
+          log_warn "npm ci failed — previous packages restored; rebuilt better-sqlite3 for the current Node.js runtime"
+        else
+          die "npm ci failed and the restored better-sqlite3 could not be rebuilt; panel will not restart"
+        fi
+      else
+        die "npm ci failed and no previous node_modules/better-sqlite3 is available; panel will not restart"
+      fi
+    fi
+  else
+    ( cd "$PANEL_DIR" && npm install --omit=dev --silent ) \
+      || ( cd "$PANEL_DIR" && npm install --production --silent ) \
+      || log_warn "npm install reported a problem — continuing (deps may already be present)"
+  fi
+  if [[ -f /var/lib/rixxx-panel/build-native-from-source ]]; then
+    bash "$PANEL_DIR/scripts/build-native-sqlite.sh" \
+      || die "Could not rebuild better-sqlite3 for this host's glibc; panel was not restarted"
+  else
+    bash "$PANEL_DIR/scripts/build-native-sqlite.sh" \
+      || log_warn "Could not rebuild better-sqlite3 — inspect npm/g++ output"
+  fi
 
   pm2 restart panel-naive-mieru --update-env 2>/dev/null \
     || pm2 start "$PANEL_DIR/server/index.js" --name panel-naive-mieru --time

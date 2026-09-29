@@ -88,6 +88,7 @@ _read_version_file() {
 CURRENT_VERSION="$(_read_version_file)"
 [[ -z "$CURRENT_VERSION" ]] && CURRENT_VERSION="1.3.3"   # fallback if VERSION missing
 REPO_URL="https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX"
+PM2_VERSION="7.0.4"
 # Bug 99: raw base for fetching single files (VERSION, update.sh) without git.
 REPO_RAW="https://raw.githubusercontent.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX/main"
 # Bug 1: direct download URL for caddy-forwardproxy-naive (amd64 only)
@@ -261,30 +262,31 @@ install_deps() {
     curl wget git ufw unzip tar xz-utils jq \
     ca-certificates gnupg lsb-release \
     systemd cron net-tools iproute2 \
-    coreutils acl 2>/dev/null || \
+    coreutils acl build-essential python3 2>/dev/null || \
   apt-get install -y \
     curl wget git ufw unzip tar xz-utils jq \
     ca-certificates gnupg lsb-release \
     systemd cron net-tools iproute2 \
-    coreutils acl
+    coreutils acl build-essential python3
   log_info "$(t 'Зависимости установлены ✓' 'Dependencies installed ✓')"
 }
 
-# ── Node.js 20 LTS + PM2 ──────────────────────────────────────────────────────
+# ── Node.js 24 LTS + PM2 ─────────────────────────────────────────────────────
 install_nodejs() {
-  log_step "$(t 'Установка Node.js 20 LTS' 'Installing Node.js 20 LTS')"
-  if command -v node &>/dev/null && node --version | grep -qE "^v2[0-9]"; then
+  log_step "$(t 'Установка Node.js 24 LTS' 'Installing Node.js 24 LTS')"
+  if command -v node &>/dev/null && node --version | grep -qE '^v24\.'; then
     log_info "Node.js $(node --version) — $(t 'уже установлен ✓' 'already installed ✓')"
   else
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+    apt-get install -y --allow-downgrades nodejs
+    node --version | grep -qE '^v24\.' || die "Node.js 24 installation did not produce a v24 runtime"
     log_info "Node.js $(node --version) $(t 'установлен ✓' 'installed ✓')"
   fi
-  if command -v pm2 &>/dev/null; then
+  if command -v pm2 &>/dev/null && [[ "$(pm2 --version 2>/dev/null)" == "$PM2_VERSION" ]]; then
     log_info "PM2 $(pm2 --version) — $(t 'уже установлен ✓' 'already installed ✓')"
   else
-    npm install -g pm2 --silent
-    log_info "$(t 'PM2 установлен ✓' 'PM2 installed ✓')"
+    npm install -g "pm2@${PM2_VERSION}" --silent
+    log_info "PM2 ${PM2_VERSION} $(t 'установлен ✓' 'installed ✓')"
   fi
 }
 
@@ -1140,7 +1142,8 @@ install_panel() {
     log_info "$(t "Скрипты обновления установлены → $PANEL_DIR ✓" "Update scripts installed → $PANEL_DIR ✓")"
   rm -rf /tmp/panel-src 2>/dev/null || true
 
-  ( cd "$PANEL_DIR" && npm install --production --silent )
+  ( cd "$PANEL_DIR" && npm ci --omit=dev --silent )
+  bash "$PANEL_DIR/scripts/build-native-sqlite.sh"
   log_info "$(t 'npm зависимости установлены ✓' 'npm dependencies installed ✓')"
 }
 

@@ -1,6 +1,6 @@
 /**
  * Panel Naive + Mieru by RIXXX — Express backend  v1.2.6
- * Node.js 20 LTS + Express + better-sqlite3 + WebSocket + node-cron
+ * Node.js 24 LTS + Express + better-sqlite3 + WebSocket + node-cron
  *
  * v1.2.3: Migrated from standalone naive binary to caddy-forwardproxy-naive.
  *   buildCaddyfile(cfg, users) — rebuilds /etc/caddy-naive/Caddyfile atomically
@@ -28,7 +28,6 @@ const helmet         = require('helmet');
 const morgan         = require('morgan');
 const rateLimit      = require('express-rate-limit');
 const bcrypt         = require('bcryptjs');
-const { v4: uuidv4 } = require('uuid');
 const cron           = require('node-cron');
 const http           = require('http');
 const { WebSocketServer } = require('ws');
@@ -1729,6 +1728,12 @@ app.use(morgan('combined', {
 // this only matters for POST /api/backup/import.
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: false }));
+// Express 5 leaves req.body undefined when the request has no parsed body;
+// keep the Express 4 behavior expected by existing API handlers.
+app.use((req, _res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 
 // Session
 let sessionSecret;
@@ -2611,7 +2616,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
     await Promise.resolve();
     const now  = new Date().toISOString();
     const user = {
-      id:        uuidv4(),
+      id:        crypto.randomUUID(),
       // Email is optional: store NULL (not '') so the UNIQUE constraint allows
       // multiple users without an email.
       email:     normEmail,
@@ -4313,7 +4318,7 @@ app.post('/api/federation/provision', fedLimiter, (req, res) => {
     const password  = crypto.randomBytes(24).toString('hex');   // random per node
     const sub_token = crypto.randomBytes(16).toString('hex');
     const user = {
-      id:        uuidv4(),
+      id:        crypto.randomUUID(),
       email,
       username,
       passHash:  bcrypt.hashSync(password, 12),
@@ -5501,7 +5506,7 @@ cron.schedule('* * * * *', () => {
 });
 
 // ── SPA catch-all ─────────────────────────────────────────────────────────────
-app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
+app.get('/{*splat}', (_req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
 // ── Global error handler (Bug 149) ───────────────────────────────────────────
 // Last-resort safety net: any error thrown synchronously inside a route (e.g. a
