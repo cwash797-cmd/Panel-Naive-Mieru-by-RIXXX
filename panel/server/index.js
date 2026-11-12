@@ -1052,7 +1052,8 @@ function validateMitaState(file) {
 //   before a cold start forces a clean rebuild. We only do this on a COLD
 //   start path (not on a live reload) to avoid disturbing a healthy server.
 function clearMitaPersistedState() {
-  for (const p of ['/root/.config/mita/server.conf.pb',
+  for (const p of ['/etc/mita/server.conf.pb',
+                   '/root/.config/mita/server.conf.pb',
                    process.env.HOME ? path.join(process.env.HOME, '.config/mita/server.conf.pb') : null]) {
     if (!p) continue;
     try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
@@ -1084,10 +1085,39 @@ function applyMitaConfig() {
     if (countMieruUsers() === 0) {
       try { execSync(`mita apply config ${file} 2>/dev/null`, { timeout: 15000 }); } catch {}
       try { execSync('mita stop 2>/dev/null || true', { timeout: 10000 }); } catch {}
-      try { execSync('systemctl stop mita 2>/dev/null || true', { timeout: 10000 }); } catch {}
+      try { execSync('systemctl disable --now mita 2>/dev/null || true', { timeout: 15000 }); } catch {}
+      clearMitaPersistedState();
       resetMitaFailed();
       shredFile(file + '.last');
       return true;   // idle is the correct, healthy state on an empty base
+    }
+
+    // The empty-user path disables and stops the daemon. On a cold start, clear
+    // its persisted server config so a deleted user's credentials cannot return.
+    let mitaActive = false;
+    try { mitaActive = execSync('systemctl is-active mita', { timeout: 5000 }).toString().trim() === 'active'; }
+    catch {}
+    if (!mitaActive) clearMitaPersistedState();
+
+    // Start the daemon before applying the first user's config:
+    // `mita apply config` requires its RPC server to be running.
+    try { execSync('systemctl start mita', { timeout: 15000, stdio: 'ignore' }); }
+    catch (e) {
+      lastMitaError = 'systemctl start mita failed: ' + (e.message || String(e));
+      return false;
+    }
+    // systemd's simple service is "active" before mita opens its RPC socket.
+    // Wait for the daemon itself before sending the first apply request.
+    let mitaReady = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try { execSync('mita status', { timeout: 2500, stdio: 'ignore' }); mitaReady = true; break; }
+      catch {
+        if (attempt < 9) execSync('sleep 0.5', { timeout: 1500 });
+      }
+    }
+    if (!mitaReady) {
+      lastMitaError = 'mita RPC server did not become ready after systemctl start';
+      return false;
     }
 
     // BUG-156: capture apply stderr so a proto rejection surfaces instead of
@@ -1112,13 +1142,9 @@ function applyMitaConfig() {
     if (/RUNNING/i.test(status)) {
       execSync('mita reload 2>/dev/null', { timeout: 15000 });
     } else {
-      // IDLE / FAILED / unknown: start the service so it binds the configured
-      // ports. Bug 96: clear stale persisted state then re-apply so the cold
-      // start rebuilds server.conf.pb cleanly; reset-failed again right before
-      // the systemctl fallback so it is not blocked by an exhausted restart
-      // counter, and verify is-active afterwards.
-      clearMitaPersistedState();
-      try { execSync(`mita apply config ${file} 2>/dev/null`, { timeout: 15000 }); } catch {}
+      // The config has already been applied above. Keep server.conf.pb here:
+      // `mita start` reads it from disk, and deleting it makes Start fail with
+      // LoadServerConfig() failed: FILE NOT EXIST.
       let started = false;
       try { execSync('mita start 2>/dev/null', { timeout: 15000 }); started = true; }
       catch { started = false; }
@@ -1145,6 +1171,11 @@ function applyMitaConfig() {
     try { finalStatus = execSync('mita status 2>/dev/null', { timeout: 10000 }).toString(); }
     catch { finalStatus = ''; }
     if (/RUNNING/i.test(finalStatus)) {
+      try { execSync('systemctl enable mita', { timeout: 10000, stdio: 'ignore' }); }
+      catch (e) {
+        lastMitaError = 'systemctl enable mita failed: ' + (e.message || String(e));
+        return false;
+      }
       lastMitaError = '';
       return true;
     }
@@ -1162,10 +1193,9 @@ function applyMitaConfig() {
 function restartMieru() {
   try {
     execSync('mita stop 2>/dev/null || true', { timeout: 10000 });
-    // Bug 96: clear failed state + stale persisted config so the cold restart
-    //   below comes up clean instead of getting stuck in "no user found".
+    // `mita stop` leaves the daemon running; keep server.conf.pb because
+    // `mita apply config` needs its existing config as the base.
     resetMitaFailed();
-    clearMitaPersistedState();
     const file = buildMitaStateFile();
     execSync(`mita apply config ${file} 2>/dev/null`, { timeout: 10000 });
     try { execSync('mita start 2>/dev/null', { timeout: 15000 }); }

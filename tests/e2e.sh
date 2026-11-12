@@ -195,8 +195,10 @@ log_step "Step 3: Service health"
 assert "caddy-naive.service active"          "systemctl is-active caddy-naive"
 assert "caddy-naive runs as user 'caddy' (Bug 37)" \
        "systemctl show caddy-naive -p User | grep -q 'User=caddy'"
-assert "mita.service enabled (Bug 64)"       "systemctl is-enabled mita"
+assert "mita.service disabled with no users" \
+       "[[ \$(systemctl is-enabled mita 2>/dev/null || true) == disabled ]]"
 assert "mita.service not active (no users yet)" "! systemctl is-active --quiet mita"
+assert "Mieru port closed with no users"      "! ss -tlnup sport = :2012 | grep -q :2012"
 assert "Panel process running (PM2)"         "pm2 list 2>/dev/null | grep -q panel-naive-mieru"
 assert "Panel responds on :3000"             "curl -sf '$PANEL_URL/' -o /dev/null"
 assert "config.json present"                 "[[ -f '$PANEL_CONFIG' ]]"

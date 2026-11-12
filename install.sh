@@ -1375,15 +1375,8 @@ start_services() {
   fi
 
   # Bug 4: mita crashes when started with empty users[].
-  # Apply portBindings config, but only start mita after first user is added.
+  # Keep it disabled with no users so a reboot cannot resurrect stale keys.
   write_mita_service
-  systemctl enable mita 2>/dev/null || true
-  if mita apply config "$MITA_STATE_FILE" 2>/dev/null; then
-    log_info "$(t 'mita config применён ✓' 'mita config applied ✓')"
-  else
-    log_warn "$(t 'mita apply config вернул ошибку — проверьте: mita status' \
-               'mita apply config returned non-zero — check: mita status')"
-  fi
   local _mita_users
   # Bug 101: parse with node (UTF-8-safe), path passed as env data.
   _mita_users=$(MITA_STATE_FILE="$MITA_STATE_FILE" node -e '
@@ -1393,6 +1386,18 @@ start_services() {
     } catch (_) { process.stdout.write("0"); }
   ' 2>/dev/null || echo 0)
   if [[ "$_mita_users" -gt 0 ]]; then
+    systemctl enable mita 2>/dev/null || true
+    systemctl start mita 2>/dev/null || true
+    local _mita_rpc_wait=0
+    while [[ $_mita_rpc_wait -lt 10 ]] && ! mita status >/dev/null 2>&1; do
+      sleep 1; ((++_mita_rpc_wait))
+    done
+    if mita apply config "$MITA_STATE_FILE" 2>/dev/null; then
+      log_info "$(t 'mita config применён ✓' 'mita config applied ✓')"
+    else
+      log_warn "$(t 'mita apply config вернул ошибку — проверьте: mita status' \
+                 'mita apply config returned non-zero — check: mita status')"
+    fi
     # Bug 75: the daemon (mita run) starting is NOT enough — the proxy stays in
     # state IDLE until `mita start` is issued. Restart the daemon, then start the
     # proxy so it actually binds the configured ports.
@@ -1405,8 +1410,10 @@ start_services() {
                    'mita failed to start — journalctl -u mita -n 30 / mita status')"
     fi
   else
-    log_info "$(t 'mita: нет пользователей — сервис запустится автоматически после добавления первого пользователя' \
-               'mita: no users yet — service will start automatically after first user is added via panel')"
+    systemctl disable --now mita 2>/dev/null || true
+    rm -f /etc/mita/server.conf.pb /root/.config/mita/server.conf.pb
+    log_info "$(t 'mita: пользователей нет — служба и старый конфиг отключены' \
+               'mita: no users — service and any stale server config disabled')"
   fi
 
   # PM2 panel
@@ -1548,11 +1555,11 @@ smoke_test() {
   chk "fake-site index.html present" "[[ -f ${FAKE_SITE_DIR}/index.html ]]"
 
   # mita tests
-  chk "mita.service enabled"         "systemctl is-enabled mita"
+  chk "mita.service disabled (no users)" \
+      "[[ \$(systemctl is-enabled mita 2>/dev/null || true) == disabled ]]"
   chk "mita-state.json present"      "[[ -f $MITA_STATE_FILE ]]"
-  chk "mita port :${MIERU_PORT_START} OR service starting" \
-      "ss -tlnup sport = :${MIERU_PORT_START} 2>/dev/null | grep -q :${MIERU_PORT_START} || \
-       systemctl is-enabled mita"
+  chk "mita has no listening port (no users)" \
+      "! ss -tlnup sport = :${MIERU_PORT_START} 2>/dev/null | grep -q :${MIERU_PORT_START}"
 
   # Panel
   chk "Panel responds :3000"         "curl -sf http://127.0.0.1:3000/ -o /dev/null"
