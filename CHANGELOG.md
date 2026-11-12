@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.6]
+
+### Docs — README refreshed to current state (RU + EN)
+
+Documentation-only release: no code changes.
+
+- **Version banner** bumped to the current release in both `README.md` and `README.en.md`.
+- **Features table** extended beyond the old v1.8.8 cut-off: personal **bonus links** (incl. `xhttp`/`splithttp` with snake_case `xmux`), **server flag/label**, **Panel Federation** (Deploy/Undeploy, email linking, hardened SUB-domain endpoints, "Test connections"), **Caddyfile self-heal + update.sh sub-block fix**, and **correct key-expiry** cleanup across Naive + Mieru + Hysteria2 + federation.
+- **Supported OS:** added **Ubuntu 26.04**; removed the stale "not supported in v1.2.3" wording.
+- **Forgot the panel password?** new section with a safe one-liner (auto-detects the panel dir via PM2, refuses to write an empty hash, timestamped backup) in both languages.
+- **English README** brought in sync: fixed the outdated public-mode URL (no more `:8080`), rewrote the Cascade section to the current Variant-B (redsocks + iptables + mieru-client) design, and updated the tech stack (Ubuntu 20.04–26.04, Hysteria2).
+
+---
+
 ## [v1.11.5]
 
 ### Fixed (CRITICAL, prod) — expired users kept working on Hysteria2 and were never removed from federation nodes

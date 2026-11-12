@@ -6,7 +6,7 @@
 
 # 🛡 Panel Naive + Mieru (+Hysteria2) by RIXXX
 
-**v1.11.1** — Веб-панель управления NaiveProxy + Mieru + Hysteria2 для Ubuntu/Debian VPS
+**v1.11.6** — Веб-панель управления NaiveProxy + Mieru + Hysteria2 для Ubuntu/Debian VPS
 
 [![Telegram](https://img.shields.io/badge/Telegram-@russian__paradice__vpn-2CA5E0?logo=telegram&logoColor=white)](https://t.me/russian_paradice_vpn)
 [![GitHub](https://img.shields.io/badge/GitHub-cwash797--cmd-181717?logo=github)](https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX)
@@ -32,6 +32,11 @@
 | 7 | **Каскад / Relay** (v1.2.6): `client → Entry (RU) → Exit (EU) → internet` — Naive `upstream` + Mieru вариант B (mieru-client + redsocks + iptables), управляется из UI |
 | 8 | **Hysteria2 «из коробки»** (v1.8.x): третий протокол общего пула — устанавливается автоматически рядом с Naive + Mieru (`install_hysteria.sh`, `auth: userpass`, systemd, per-user трафик, каскад). Включается чекбоксом в общем пуле пользователя. |
 | 9 | **Одна «умная» Sub-ссылка** (v1.8.7–1.8.8): единая ссылка `/sub/:token` с авто-определением клиента по User-Agent. **Shadowrocket** получает base64-список URI (Naive → нативная HTTPS-схема, Mieru `mierus://`, Hy2 `hysteria2://`), **Karing** — sing-box JSON. Передаёт срок действия и трафик через заголовок `Subscription-Userinfo`. ✅ **Проверено на Karing и Shadowrocket.** |
+| 10 | **Персональные «бонусные» ссылки** (v1.9.0, v1.11.3–1.11.4): админ может прикрепить к конкретному пользователю любые внешние ссылки (`vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://`) — они попадают и в base64-подписку, и в sing-box JSON как отдельные outbounds. Поддержка транспортов `ws` / `grpc` / `httpupgrade` / `http` / **`xhttp` (+`splithttp`, с `xmux` в snake_case для sing-box/Karing)**. |
+| 11 | **Флаг / метка сервера** (v1.9.4): эмодзи/префикс (напр. 🇷🇺 RU) добавляется к имени каждого конфига — удобно различать ноды в клиенте. |
+| 12 | **Федерация панелей** (v1.9.5–1.11.2): hub-and-spoke. Создаёте пользователя на главной панели → **«Довыпуск»** раздаёт его на все подключённые ноды (ключ связывания — email), **«Отозвать»** удаляет на всех разом. Одна Sub-ссылка собирает конфиги со всех нод. Эндпоинты защищены (bearer-токен, POST-only, rate-limit, constant-time сравнение), отдаются на SUB-домене без probe_resistance. **«Проверить связь»** диагностирует каждую ноду (DNS / TLS / токен). |
+| 13 | **Надёжность конфигов** (v1.11.1–1.11.2): self-heal Caddyfile (сверка желаемого и реального при каждом сохранении настроек) + фикс `update.sh`, чтобы sub-домен и `/api/federation/*` всегда попадали в Caddyfile после обновления. |
+| 14 | **Корректное истечение ключей** (v1.11.5): просроченные (по времени) пользователи теперь отключаются сразу от **всех трёх протоколов** (Naive + Mieru + **Hysteria2**) и **отзываются с нод федерации** — ранее Hy2 и федерация оставались активными. |
 
 ---
 
@@ -39,11 +44,11 @@
 
 | Дистрибутив | Версии |
 |-------------|--------|
-| Ubuntu | 20.04, 22.04, 24.04 |
+| Ubuntu | 20.04, 22.04, 24.04, 26.04 |
 | Debian | 11, 12 |
 
 **Архитектуры:** `x86_64` (amd64) — **только** *(caddy-forwardproxy-naive поддерживает только amd64)*  
-> ⚠️ ARM64 и ARMv7 **не поддерживаются** в v1.2.3 — установщик завершится с понятной ошибкой.
+> ⚠️ ARM64 и ARMv7 **не поддерживаются** — установщик завершится с понятной ошибкой.
 
 ---
 
@@ -103,6 +108,33 @@ sudo bash update.sh --ssh-only
 
 > ⚠️ Старые установки на `:8080` при обновлении автоматически переводятся в
 > безопасный SSH-only режим (порт 8080 закрывается), доступ при этом не теряется.
+
+### 🔑 Забыли пароль от панели?
+
+Пароль хранится в виде bcrypt-хэша в `/etc/rixxx-panel/config.json` — восстановить
+старый нельзя, но можно задать новый по SSH. Команда сама находит директорию панели
+через PM2 и **не трогает конфиг, если хэш не сформировался** (защита от блокировки):
+
+```bash
+NEWPASS='ВашНовыйПароль'; \
+CFG=/etc/rixxx-panel/config.json; \
+DIR=$(pm2 jlist 2>/dev/null | node -e "try{let d=JSON.parse(require('fs').readFileSync(0));let p=d.find(x=>x.name==='panel-naive-mieru');process.stdout.write((p&&p.pm2_env&&p.pm2_env.pm_cwd)||'')}catch(e){}"); \
+[ -z "$DIR" ] && DIR=/opt/panel-naive-mieru; \
+cd "$DIR" || { echo "❌ Директория панели не найдена"; exit 1; }; \
+HASH=$(node -e "console.log(require('bcryptjs').hashSync(process.argv[1],12))" "$NEWPASS" 2>/dev/null); \
+case "$HASH" in \
+  \$2*) cp "$CFG" "$CFG.bak.$(date +%Y%m%d%H%M%S)"; \
+       node -e "let f='$CFG',c=JSON.parse(require('fs').readFileSync(f));c.adminPassHash='$HASH';require('fs').writeFileSync(f,JSON.stringify(c,null,2))" && \
+       pm2 restart panel-naive-mieru >/dev/null 2>&1 && \
+       echo "✅ Пароль обновлён. Логин: $(node -e "console.log(JSON.parse(require('fs').readFileSync('$CFG')).adminUser||'admin')")" ;; \
+  *)   echo "❌ Не удалось создать хэш (bcryptjs не найден в $DIR) — конфиг НЕ изменён" ;; \
+esac
+```
+
+Откат на предыдущий конфиг (если нужно):
+```bash
+ls -t /etc/rixxx-panel/config.json.bak.* | head -1 | xargs -I{} cp {} /etc/rixxx-panel/config.json && pm2 restart panel-naive-mieru
+```
 
 ---
 
@@ -413,11 +445,12 @@ ufw status
 
 ## 📋 Стек технологий
 
-- **Установщик:** Bash (Ubuntu 20.04–24.04, Debian 11–12)
+- **Установщик:** Bash (Ubuntu 20.04–26.04, Debian 11–12)
 - **Панель:** Node.js 20 LTS + Express + better-sqlite3 + WebSocket
 - **Процесс-менеджер:** PM2
 - **NaiveProxy:** caddy-naive (Caddy + forward_proxy plugin)
 - **Mieru:** mita (управляется через `mita apply config`)
+- **Hysteria2:** hysteria-server (`auth: userpass`, per-user трафик)
 - **Файрвол:** UFW
 - **База данных:** SQLite (WAL mode)
 
