@@ -174,7 +174,7 @@ check_os() {
   case "$ID" in
     ubuntu)
       case "$VERSION_ID" in
-        20.04|22.04|24.04) log_info "OS: Ubuntu $VERSION_ID ✓" ;;
+        20.04|22.04|24.04|26.04) log_info "OS: Ubuntu $VERSION_ID ✓" ;;
         *) die "$(t "Неподдерживаемая Ubuntu: $VERSION_ID" "Unsupported Ubuntu: $VERSION_ID")" ;;
       esac ;;
     debian)
