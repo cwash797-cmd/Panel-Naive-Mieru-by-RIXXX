@@ -1276,12 +1276,18 @@ async function loadSettings() {
     const langSel = el('s-language-select');
     if (langSel) langSel.value = cfg.language || currentLang || 'ru';
     // v1.2.5: probe secret (masked)
+    // v1.11.7 FIX: GET /api/config NEVER returns the raw probeSecret — it exposes
+    // a boolean `probeSecretSet` (+ `probeMode`) instead. The UI used to read the
+    // absent `cfg.probeSecret`, so it always showed an empty placeholder AND
+    // fell back to 'bare' mode — i.e. a configured secret looked "disabled".
+    // Use the server's authoritative `probeSecretSet` / `probeMode` instead.
+    const probeSecretSet = (cfg.probeSecretSet === true) || !!cfg.probeSecret;
     const probeEl = el('s-probe-secret');
-    if (probeEl) probeEl.placeholder = cfg.probeSecret ? '••••••••' : (t('settings.probeSecretPlaceholder') || 'Enter probe secret');
+    if (probeEl) probeEl.placeholder = probeSecretSet ? '••••••••' : (t('settings.probeSecretPlaceholder') || 'Enter probe secret');
     // Bug 81: probe_resistance mode selector + secret-input visibility
     const probeModeSel = el('s-probe-mode');
     if (probeModeSel) {
-      const mode = cfg.probeMode || (cfg.probeSecret ? 'secret' : 'bare');
+      const mode = cfg.probeMode || (probeSecretSet ? 'secret' : 'bare');
       probeModeSel.value = mode;
       probeModeSel.onchange = toggleProbeSecretVisibility;
       toggleProbeSecretVisibility();

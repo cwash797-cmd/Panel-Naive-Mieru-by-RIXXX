@@ -7,6 +7,37 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.7]
+
+### Fixed — probe_resistance secret shown as "disabled" in Settings (subscriber report)
+
+**Symptom.** At install time a `probe_secret` is generated and written to
+`config.json` (`probeMode:'bare'`, `probeSecret:<hex>`), but the **Settings page
+showed it as disabled / empty** — looking like no secret was set.
+
+**Root cause (UI, not install).** `GET /api/config` deliberately **never returns
+the raw `probeSecret`** — for safety it exposes a boolean **`probeSecretSet`**
+(plus `probeMode`). The Settings page, however, read the *absent* `cfg.probeSecret`
+directly:
+- the masked placeholder (`••••••••`) was gated on `cfg.probeSecret`, so it never
+  appeared, and
+- the mode fallback `cfg.probeMode || (cfg.probeSecret ? 'secret' : 'bare')`
+  collapsed to `'bare'` whenever the raw value was absent — i.e. a configured
+  secret looked turned off.
+
+**Fix.** The Settings page now derives state from the server's authoritative
+`probeSecretSet` (boolean) and `probeMode`, not from the non-exposed raw secret.
+A fresh install with an auto-generated secret now correctly shows the masked
+placeholder and the real mode. Install/server side was already correct — no change
+there, and the raw secret is still never sent to the browser.
+
+**Tests:** new `tests/bug-probesecret-ui.test.js` (13 assertions) — server exposes
+only `probeSecretSet`/`probeMode` (never the raw secret), the UI reads those fields,
+the old buggy `cfg.probeSecret` reads are gone, and a behavioural model confirms a
+configured secret is shown as set (not disabled) across bare/secret/off.
+
+---
+
 ## [v1.11.6]
 
 ### Docs — README refreshed to current state (RU + EN)
