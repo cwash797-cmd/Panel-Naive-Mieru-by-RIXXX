@@ -6,7 +6,7 @@
 
 # 🛡 Panel Naive + Mieru by RIXXX
 
-**v1.8.8** — Web management panel for NaiveProxy + Mieru + Hysteria2 on Ubuntu/Debian VPS
+**v1.11.6** — Web management panel for NaiveProxy + Mieru + Hysteria2 on Ubuntu/Debian VPS
 
 [![Telegram](https://img.shields.io/badge/Telegram-@russian__paradice__vpn-2CA5E0?logo=telegram&logoColor=white)](https://t.me/russian_paradice_vpn)
 [![GitHub](https://img.shields.io/badge/GitHub-cwash797--cmd-181717?logo=github)](https://github.com/cwash797-cmd/Panel-Naive-Mieru-by-RIXXX)
@@ -32,6 +32,11 @@
 | 7 | **Cascade / Relay** (v1.2.6): `client → Entry (RU) → Exit (EU) → internet` via upstream (Naive) + egress SOCKS5 (Mieru) |
 | 8 | **Hysteria2 out of the box** (v1.8.x): a third shared-pool protocol installed automatically alongside Naive + Mieru (`install_hysteria.sh`, `auth: userpass`, systemd, per-user traffic, cascade). Enabled via a checkbox in the user's shared pool. |
 | 9 | **One "smart" Sub-link** (v1.8.7–1.8.8): a single `/sub/:token` link with client auto-detection by User-Agent. **Shadowrocket** gets a base64 URI list (Naive → native HTTPS scheme, Mieru `mierus://`, Hy2 `hysteria2://`), **Karing** gets sing-box JSON. Passes expiry & traffic via the `Subscription-Userinfo` header. ✅ **Verified on Karing and Shadowrocket.** |
+| 10 | **Personal "bonus" links** (v1.9.0, v1.11.3–1.11.4): attach arbitrary external links (`vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://`) to a specific user — they land in both the base64 subscription and the sing-box JSON as extra outbounds. Transports `ws` / `grpc` / `httpupgrade` / `http` / **`xhttp` (+`splithttp`, with `xmux` in snake_case for sing-box/Karing)**. |
+| 11 | **Server flag / label** (v1.9.4): an emoji/prefix (e.g. 🇷🇺 RU) is added to every config name — handy to tell nodes apart in the client. |
+| 12 | **Panel Federation** (v1.9.5–1.11.2): hub-and-spoke. Create a user on the main panel → **"Deploy"** pushes them to every linked node (linking key = email), **"Undeploy"** removes them everywhere at once. One Sub-link aggregates configs from all nodes. Endpoints are hardened (bearer token, POST-only, rate-limit, constant-time compare) and served on the SUB-domain without probe_resistance. **"Test connections"** diagnoses each node (DNS / TLS / token). |
+| 13 | **Config robustness** (v1.11.1–1.11.2): Caddyfile self-heal (desired-vs-on-disk comparison on every settings save) + an `update.sh` fix so the sub-domain and `/api/federation/*` always land in the Caddyfile after an update. |
+| 14 | **Correct key expiry** (v1.11.5): expired (time-based) users are now dropped from **all three protocols** (Naive + Mieru + **Hysteria2**) and **revoked from federation nodes** — previously Hy2 and federation stayed active. |
 
 ---
 
@@ -39,11 +44,11 @@
 
 | Distro | Versions |
 |--------|----------|
-| Ubuntu | 20.04, 22.04, 24.04 |
+| Ubuntu | 20.04, 22.04, 24.04, 26.04 |
 | Debian | 11, 12 |
 
 **Architecture:** `x86_64` (amd64) — **only** *(caddy-forwardproxy-naive supports amd64 only)*  
-> ⚠️ ARM64 and ARMv7 are **not supported** in v1.2.3 — the installer will exit with a clear error message.
+> ⚠️ ARM64 and ARMv7 are **not supported** — the installer will exit with a clear error message.
 
 ---
 
@@ -81,10 +86,47 @@ ssh -L 3000:127.0.0.1:3000 root@<your-server-ip>
 # Then open: http://localhost:3000/
 ```
 
-### Public mode
+### Public mode (domain + TLS + basic auth + webBasePath)
+
+The panel **always** listens only on `127.0.0.1:3000`. External access is opened
+exclusively via a dedicated subdomain with TLS — there is no plain HTTP port (8080) anymore.
+
 ```bash
-sudo bash update.sh --expose vpn.example.com
-# Panel available at: http://vpn.example.com:8080/
+sudo bash update.sh --expose panel.example.com
+# Panel available at: https://panel.example.com/<webBasePath>/
+#   • <webBasePath> — random 16 hex (changeable in the UI or via --web-base-path)
+#   • the root panel.example.com/ and any path outside webBasePath → static stub
+#   • protected by basic auth (login/password) on top of the panel login
+```
+
+Revert to local mode:
+```bash
+sudo bash update.sh --ssh-only
+```
+
+> ⚠️ Legacy `:8080` installs are automatically migrated to the safe SSH-only mode
+> on update (port 8080 is closed), without losing access.
+
+### 🔑 Forgot the panel password?
+
+The password is stored as a bcrypt hash in `/etc/rixxx-panel/config.json` — the old
+one cannot be recovered, but you can set a new one over SSH. The command auto-detects
+the panel directory via PM2 and **never writes an empty hash** (lockout guard):
+
+```bash
+NEWPASS='YourNewPassword'; \
+CFG=/etc/rixxx-panel/config.json; \
+DIR=$(pm2 jlist 2>/dev/null | node -e "try{let d=JSON.parse(require('fs').readFileSync(0));let p=d.find(x=>x.name==='panel-naive-mieru');process.stdout.write((p&&p.pm2_env&&p.pm2_env.pm_cwd)||'')}catch(e){}"); \
+[ -z "$DIR" ] && DIR=/opt/panel-naive-mieru; \
+cd "$DIR" || { echo "❌ Panel directory not found"; exit 1; }; \
+HASH=$(node -e "console.log(require('bcryptjs').hashSync(process.argv[1],12))" "$NEWPASS" 2>/dev/null); \
+case "$HASH" in \
+  \$2*) cp "$CFG" "$CFG.bak.$(date +%Y%m%d%H%M%S)"; \
+       node -e "let f='$CFG',c=JSON.parse(require('fs').readFileSync(f));c.adminPassHash='$HASH';require('fs').writeFileSync(f,JSON.stringify(c,null,2))" && \
+       pm2 restart panel-naive-mieru >/dev/null 2>&1 && \
+       echo "✅ Password updated. Login: $(node -e "console.log(JSON.parse(require('fs').readFileSync('$CFG')).adminUser||'admin')")" ;; \
+  *)   echo "❌ Could not create hash (bcryptjs not found in $DIR) — config NOT changed" ;; \
+esac
 ```
 
 ---
@@ -236,31 +278,39 @@ Contains all enabled protocols (NaiveProxy + Mieru + Hysteria2) with `urltest` s
 Configure a two-hop chain directly from the panel (**Settings → Cascade**):
 
 ```
-┌──────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────┐
-│  Client  │──▶│ Entry (RU)   │──▶│ Exit (EU)    │──▶│ Internet │
-│          │   │ caddy-naive  │   │ SOCKS5/443   │   │          │
-│  Naive   │   │ upstream     │   │              │   │          │
-│  + Mieru │   │ mita + egress│   │              │   │          │
-└──────────┘   └──────────────┘   └──────────────┘   └──────────┘
+┌──────────┐   ┌────────────────────────────┐   ┌──────────────┐   ┌──────────┐
+│  Client  │──▶│ Entry (RU)                 │──▶│ Exit (EU)    │──▶│ Internet │
+│          │   │ caddy-naive  → upstream    │   │ caddy-naive  │   │          │
+│  Naive   │   │ mita (plain)               │   │ mita         │   │          │
+│  + Mieru │   │ mieru-client→redsocks→ipt. │   │              │   │          │
+└──────────┘   └────────────────────────────┘   └──────────────┘   └──────────┘
 ```
+
+The RU provider only sees the Entry node; all outbound traffic leaves via the Exit (EU).
 
 ### What happens under the hood
 
-- **NaiveProxy** — the `Caddyfile` gets an `upstream https://user:pass@exit-host:443` directive inside the `forward_proxy` block. Client traffic is forwarded to the Exit node before reaching the internet.
-- **Mieru** — the `mita-state.json` receives an `egress` object with a SOCKS5 proxy (`SOCKS5_PROXY_PROTOCOL`) pointing at the Exit node. The `action: DIRECT` rule means all traffic goes through that exit.
+- **NaiveProxy** — the Entry `Caddyfile` gets an `upstream https://user:pass@exit-host:443` directive inside the `forward_proxy` block. Client traffic is forwarded to the Exit node before reaching the internet.
+- **Mieru — Variant B (redsocks + iptables + mieru-client)**. The Exit is a full Mieru server (`mita`), not a raw SOCKS5, so instead of native egress a transparent relay is used:
+  1. `mieru-client` opens a local SOCKS5 on `127.0.0.1:1080`, connecting to the Exit `mita` over the Mieru protocol (full port range).
+  2. `redsocks` (`127.0.0.1:12345`) turns that SOCKS5 into a transparent redirect.
+  3. `iptables` (chain `REDSOCKS`, owner-match on the `mita` uid) redirects Entry-`mita` outbound TCP into redsocks. A RETURN rule for the Exit IP prevents a loop.
+  4. A `watchdog` (cron) restarts `mieru-client` after 3 consecutive failed checks.
+
+  The whole chain is set up / torn down by `panel/scripts/cascade_mieru.sh` (`setup` / `teardown` / `status`), called from the API. `mieru-client` and `redsocks` are installed **lazily** on first enable.
 
 ### UI controls
 
 1. Open **Settings → Cascade**.
 2. Tick **«Enable cascade»**.
-3. Fill in:
+3. Fill in (either leg is optional):
    - **Naive upstream URL** — `https://user:password@exit.example.com:443`
-   - **Mieru Exit host** — IP or domain of the Exit node
-   - **Mieru Exit port** — SOCKS5 port (usually `1080`)
-   - **User / Password** — if the Exit requires SOCKS5 authentication
-4. Press **Apply cascade**. The panel atomically rewrites `Caddyfile` and `mita-state.json`, reloads services, and shows a toast notification.
+   - **Mieru exit host / IP**, **port range** (default `2012–2022`), **username / password**
+4. Press **Apply cascade**. The panel rewrites the `Caddyfile` (Naive) and starts/stops the relay via `cascade_mieru.sh` (Mieru). First setup may take up to a minute (lazy package install).
+5. The **"Check status"** button shows `mieru.service` / `redsocks` state, the iptables chain, and the current egress IP.
 
-> 💡 You can toggle cascade on/off without erasing settings — just untick the checkbox and press **Apply**.
+> 💡 You can toggle cascade on/off without erasing settings — untick and press **Apply**: the relay is cleanly torn down and the Exit password is kept for re-enabling.
+> 🔒 The Exit password is never returned to the browser (`/api/config` only reports a set/unset flag).
 
 ---
 
@@ -347,11 +397,12 @@ ufw status
 
 ## 📋 Tech Stack
 
-- **Installer:** Bash (Ubuntu 20.04–24.04, Debian 11–12)
+- **Installer:** Bash (Ubuntu 20.04–26.04, Debian 11–12)
 - **Panel:** Node.js 20 LTS + Express + better-sqlite3 + WebSocket
 - **Process manager:** PM2
 - **NaiveProxy:** caddy-naive (Caddy + forward_proxy plugin)
 - **Mieru:** mita (managed via `mita apply config`)
+- **Hysteria2:** hysteria-server (`auth: userpass`, per-user traffic)
 - **Firewall:** UFW
 - **Database:** SQLite (WAL mode)
 
