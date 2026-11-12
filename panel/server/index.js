@@ -5437,22 +5437,39 @@ wss.on('connection', ws => {
 });
 
 // ── Expiry cron — every 5 min ─────────────────────────────────────────────────
-cron.schedule('*/5 * * * *', () => {
+// v1.11.5 (prod bug): when a user's time expired, the cron rebuilt the Caddyfile
+// (Naive) and applied Mita (Mieru) but FORGOT Hysteria2 and federation. The old
+// block predates Hy2 + federation, so an expired user kept working on Hy2 (its
+// config.yaml + the running hysteria-server kept the credential until some
+// UNRELATED user CRUD happened to rewrite it), and on federated nodes the user
+// was never removed at all — living forever. Karing caching its profile on a 404
+// from /sub/:token made the free Hy2 ride persist for days.
+//
+// Fix: use the SAME full apply path as every other user mutation —
+// applyAllConfigsAsync() rebuilds Caddy (Naive) + Mita (Mieru) + Hysteria2 in one
+// place — and broadcast a federation deprovision for every expired user's email
+// so linked nodes drop them too. Emails are collected BEFORE deleteUser() (the
+// row is gone afterwards).
+cron.schedule('*/5 * * * *', async () => {
   const now = new Date().toISOString();
   let changed = false;
+  const expiredEmails = [];
   getAllUsers().forEach(u => {
     if (u.expiry && u.expiry < now) {
       console.log('[CRON] Removing expired user:', u.username);
-      deleteUser(u.id); changed = true;
+      if (u.email) expiredEmails.push(u.email);
+      deleteUser(u.id);
+      changed = true;
     }
   });
   if (changed) {
-    try {
-      const content = buildCaddyfile(cfg, getAllUsers());
-      writeCaddyfileAtomic(content);
-      reloadCaddy();
-    } catch {}
-    try { applyMitaConfig(); } catch {}
+    // Rebuilds Caddy (Naive) + Mita (Mieru) + Hysteria2 in the background.
+    try { applyAllConfigsAsync(); } catch (e) { console.error('[CRON] applyAllConfigs failed:', e && e.message); }
+    // Revoke the expired user on every enabled federation node (keyed by email).
+    for (const email of expiredEmails) {
+      try { await broadcastDeprovision(email); }
+      catch (e) { console.error('[CRON] Federation undeploy failed:', e && e.message); }
+    }
   }
 });
 

@@ -7,6 +7,50 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [v1.11.5]
+
+### Fixed (CRITICAL, prod) — expired users kept working on Hysteria2 and were never removed from federation nodes
+
+**Symptom (reported from production).** When a user's time (`expiry`) ran out,
+Naive and Mieru correctly stopped (auth failure in Karing), but **Hysteria2 kept
+carrying traffic for days** (YouTube etc.). On setups with **federation**, the
+expired user was **never removed from the linked nodes** and lived forever.
+
+**Root cause.** The every-5-min expiry cron (`cron.schedule('*/5 * * * *')` at the
+bottom of `panel/server/index.js`) predates Hy2 + federation. It:
+1. `deleteUser(u.id)` (SQLite),
+2. rebuilt the Caddyfile + `reloadCaddy()` (Naive off),
+3. `applyMitaConfig()` (Mieru off),
+but **never wrote the Hysteria2 config** and **never deprovisioned federation**.
+So `/etc/hysteria/config.yaml` and the running `hysteria-server` kept the expired
+credential until some *unrelated* user CRUD happened to rewrite it — and since
+Karing caches its profile on a `404` from `/sub/:token`, the client kept riding
+Hy2 for free. On federation hubs the expired user was never broadcast-revoked.
+
+**Fix (thanks to the community report).** The expiry cron now uses the same full
+apply path as every other user mutation — `applyAllConfigsAsync()` rebuilds
+**Caddy (Naive) + Mita (Mieru) + Hysteria2** in one place — and calls
+`broadcastDeprovision(email)` for each expired user so linked federation nodes
+drop them too. Emails are collected **before** `deleteUser()` (the row is gone
+afterwards). The callback is now `async` so the deprovision can be awaited.
+
+**Safety.** Only the expiry cron changed; it now does strictly *more* cleanup
+(Hy2 + federation) via existing, already-tested functions. Non-expired users are
+untouched. No schema / config / API changes.
+
+### Added — Ubuntu 26.04 support in `install.sh`
+
+The OS check now accepts **Ubuntu 26.04** (`20.04|22.04|24.04|26.04`) — community
+testing confirmed the installer runs cleanly on 26.04.
+
+**Tests:** new `tests/bug-expiry-cron-hy2-federation.test.js` (13 assertions) —
+runs the extracted cron callback against mocked helpers to prove expired users
+are deleted, `applyAllConfigsAsync()` (the Hy2 path) is invoked,
+`broadcastDeprovision()` is called per expired email, active users are untouched,
+the old Naive-only rebuild is gone, and `install.sh` accepts 26.04.
+
+---
+
 ## [v1.11.4]
 
 ### Fixed — xhttp `xmux` / knobs must be snake_case for sing-box (issue #106 follow-up)
